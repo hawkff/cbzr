@@ -34,6 +34,8 @@ Follows yazi's adapter idea: probe the terminal, pick the best backend.
 | `tab` | chapter menu (ComicInfo.xml bookmarks or archive folders) |
 | `b` | toggle bookmark on this page |
 | `F` | bookmarks menu (persisted in the user config dir) |
+| `/` in menus | fuzzy filter (subsequence match) |
+| `r` / `d` in bookmarks | rename / delete mark |
 | `S` | screenshot page to PNG (`CBZR_SHOT_DIR` or cwd) |
 | `R` | rotate 90° cw |
 | `+` / `-` / `0` | zoom in / out / reset |
