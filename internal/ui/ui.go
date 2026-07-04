@@ -32,6 +32,8 @@ const (
 	modeHelp
 	modeMenu
 	modeSearch
+	modeMenuFilter
+	modeMenuRename
 )
 
 const (
@@ -86,7 +88,7 @@ type Model struct {
 	openBrowser   func(string) error
 
 	menu    menu
-	input   string // search input buffer
+	input   string // search / filter / rename input buffer
 	find    search
 	ocrText map[string]string // "path\x00page" -> text
 
@@ -248,6 +250,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMouse(msg)
 
 	case tea.KeyMsg:
+		// Terminals can batch fast typing (or paste) into one rune message;
+		// replay it as individual keys so counts like "2j" still work.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
+			var mdl tea.Model = m
+			var cmds []tea.Cmd
+			for _, r := range msg.Runes {
+				var cmd tea.Cmd
+				mdl, cmd = mdl.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+			return mdl, tea.Batch(cmds...)
+		}
 		switch m.mode {
 		case modePick:
 			return m.updatePicker(msg)
@@ -256,6 +272,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case modeMenu:
 			return m.updateMenu(msg)
+		case modeMenuFilter:
+			return m.updateMenuFilter(msg)
+		case modeMenuRename:
+			return m.updateMenuRename(msg)
 		case modeSearch:
 			return m.updateSearch(msg)
 		default:
@@ -435,6 +455,11 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "tab", "F":
+		if m.menu.filter != "" && msg.String() == "esc" {
+			m.menu.filter = ""
+			m.menu.applyFilter()
+			return m, nil
+		}
 		m.mode = modeRead
 		return m, nil
 	case "j", "down":
@@ -449,12 +474,43 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G":
 		m.menu.move(len(m.menu.items), m.menuHeight())
 		return m, nil
+	case "/":
+		m.mode = modeMenuFilter
+		return m, nil
+	case "r":
+		if m.menu.kind != menuBookmarks {
+			return m, nil
+		}
+		it, ok := m.menu.selected()
+		if !ok {
+			return m, nil
+		}
+		m.input = ""
+		for _, mk := range m.marks.Marks {
+			if mk.Book == it.path && mk.Page == it.page {
+				m.input = mk.Name
+				break
+			}
+		}
+		m.mode = modeMenuRename
+		return m, nil
+	case "d":
+		if m.menu.kind != menuBookmarks {
+			return m, nil
+		}
+		it, ok := m.menu.selected()
+		if !ok {
+			return m, nil
+		}
+		m.marks.Remove(it.path, it.page)
+		m.reloadBookmarkMenu()
+		return m, nil
 	case "enter", "l":
-		if len(m.menu.items) == 0 {
+		it, ok := m.menu.selected()
+		if !ok {
 			m.mode = modeRead
 			return m, nil
 		}
-		it := m.menu.items[m.menu.cursor]
 		m.mode = modeRead
 		p := m.panes[m.active]
 		if it.path != "" && (p.book == nil || p.book.Path != it.path) {
@@ -466,6 +522,74 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.goTo(m.active, it.page)
 	}
 	return m, nil
+}
+
+func (m Model) updateMenuFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.menu.filter = ""
+		m.menu.applyFilter()
+		m.mode = modeMenu
+		return m, nil
+	case "enter":
+		m.mode = modeMenu
+		return m, nil
+	case "backspace":
+		if len(m.menu.filter) > 0 {
+			m.menu.filter = m.menu.filter[:len(m.menu.filter)-1]
+			m.menu.applyFilter()
+		}
+		return m, nil
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			if msg.Type == tea.KeySpace {
+				m.menu.filter += " "
+			} else {
+				m.menu.filter += string(msg.Runes)
+			}
+			m.menu.cursor, m.menu.top = 0, 0
+			m.menu.applyFilter()
+		}
+		return m, nil
+	}
+}
+
+func (m Model) updateMenuRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeMenu
+		return m, nil
+	case "enter":
+		if it, ok := m.menu.selected(); ok {
+			m.marks.Rename(it.path, it.page, m.input)
+			m.reloadBookmarkMenu()
+		}
+		m.mode = modeMenu
+		return m, nil
+	case "backspace":
+		if len(m.input) > 0 {
+			m.input = m.input[:len(m.input)-1]
+		}
+		return m, nil
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.input += string(msg.Runes)
+		} else if msg.Type == tea.KeySpace {
+			m.input += " "
+		}
+		return m, nil
+	}
+}
+
+// reloadBookmarkMenu rebuilds menu rows from the store, preserving cursor
+// position and the active filter.
+func (m *Model) reloadBookmarkMenu() {
+	cursor, top, filter := m.menu.cursor, m.menu.top, m.menu.filter
+	m.menu = m.buildBookmarkMenu()
+	m.menu.filter = filter
+	m.menu.applyFilter()
+	m.menu.cursor = max(0, min(cursor, len(m.menu.items)-1))
+	m.menu.top = max(0, min(top, m.menu.cursor))
 }
 
 func (m Model) menuHeight() int { return max(1, m.height-3) }
@@ -683,23 +807,30 @@ func (m Model) openChapters() (tea.Model, tea.Cmd) {
 			cursor = i
 		}
 	}
-	m.menu = menu{title: "Chapters — " + p.book.Title, items: items, cursor: cursor}
+	m.menu = menu{kind: menuChapters, title: "Chapters — " + p.book.Title, all: items, cursor: cursor}
+	m.menu.applyFilter()
 	m.menu.move(0, m.menuHeight())
 	m.mode = modeMenu
 	return m, nil
 }
 
-func (m Model) openBookmarks() (tea.Model, tea.Cmd) {
+func (m Model) buildBookmarkMenu() menu {
 	items := make([]menuItem, 0, len(m.marks.Marks))
 	for _, mk := range m.marks.Marks {
 		items = append(items, menuItem{
 			label: fmt.Sprintf("%-36s p.%-5d %s",
-				ansi.Truncate(mk.Title, 36, "…"), mk.Page+1, mk.Added.Format("2006-01-02")),
+				ansi.Truncate(mk.Label(), 36, "…"), mk.Page+1, mk.Added.Format("2006-01-02")),
 			page: mk.Page,
 			path: mk.Book,
 		})
 	}
-	m.menu = menu{title: "Bookmarks", items: items}
+	mn := menu{kind: menuBookmarks, title: "Bookmarks", all: items}
+	mn.applyFilter()
+	return mn
+}
+
+func (m Model) openBookmarks() (tea.Model, tea.Cmd) {
+	m.menu = m.buildBookmarkMenu()
 	m.mode = modeMenu
 	return m, nil
 }
@@ -932,7 +1063,13 @@ func (m Model) View() string {
 	case modeHelp:
 		return m.helpView()
 	case modeMenu:
-		return m.menu.view(m.width, m.height)
+		return m.menu.view(m.width, m.height, "")
+	case modeMenuFilter:
+		footer := titleActive.Render(" /"+m.menu.filter+"▏") + dim.Render("  fuzzy filter · enter keep · esc clear")
+		return m.menu.view(m.width, m.height, footer)
+	case modeMenuRename:
+		footer := titleActive.Render(" rename: "+m.input+"▏") + dim.Render("  enter save · empty reverts to title · esc cancel")
+		return m.menu.view(m.width, m.height, footer)
 	}
 
 	paneViews := make([]string, 0, 3)

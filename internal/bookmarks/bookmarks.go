@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -14,8 +15,18 @@ import (
 type Mark struct {
 	Book  string    `json:"book"` // absolute path to the .cbz
 	Title string    `json:"title"`
+	Name  string    `json:"name,omitempty"` // user-given label
 	Page  int       `json:"page"`
 	Added time.Time `json:"added"`
+}
+
+// Label returns the display name: the custom name when set, else the
+// book title.
+func (m Mark) Label() string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.Title
 }
 
 // Store holds all marks, keyed nowhere: a flat list, newest last.
@@ -65,6 +76,30 @@ func (s *Store) Toggle(book, title string, page int) bool {
 func (s *Store) Has(book string, page int) bool {
 	for _, m := range s.Marks {
 		if m.Book == book && m.Page == page {
+			return true
+		}
+	}
+	return false
+}
+
+// Rename sets the custom label of book+page. Empty name reverts to the title.
+func (s *Store) Rename(book string, page int, name string) bool {
+	for i := range s.Marks {
+		if s.Marks[i].Book == book && s.Marks[i].Page == page {
+			s.Marks[i].Name = strings.TrimSpace(name)
+			s.save()
+			return true
+		}
+	}
+	return false
+}
+
+// Remove deletes the mark for book+page.
+func (s *Store) Remove(book string, page int) bool {
+	for i, m := range s.Marks {
+		if m.Book == book && m.Page == page {
+			s.Marks = append(s.Marks[:i], s.Marks[i+1:]...)
+			s.save()
 			return true
 		}
 	}
