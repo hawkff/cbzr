@@ -31,6 +31,7 @@ Follows yazi's adapter idea: probe the terminal, pick the best backend.
 | `g` / `G` | first / last page (`42G` → page 42) |
 | `w` | switch pane |
 | `v` | toggle split (keeps active pane) |
+| `s` | two-page spread: pages N and N+1 side by side (single pane) |
 | `tab` | chapter menu (ComicInfo.xml bookmarks or archive folders) |
 | `b` | toggle bookmark on this page |
 | `F` | bookmarks menu (persisted in the user config dir) |
