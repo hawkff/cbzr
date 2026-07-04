@@ -61,6 +61,11 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 	payload := base64.StdEncoding.EncodeToString(pngBuf.Bytes())
 
 	var out bytes.Buffer
+	// Kill the previous image and its virtual placement first. Reusing an
+	// id with different c/r otherwise leaves the old placement geometry
+	// live: placeholder cells outside it stay blank (half-drawn pages) and
+	// narrower grids show a slice of the old mapping.
+	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id), "")
 	first := true
 	for len(payload) > 0 {
 		n := min(chunkSize, len(payload))
