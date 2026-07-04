@@ -12,14 +12,16 @@ import (
 
 var queriedCell struct{ cw, ch float64 }
 
-// CellSize returns the pixel size of one terminal cell. Order: TIOCGWINSZ
-// (live), the cached XTWINOPS probe from QueryCellSize, then 8x16.
+// CellSize returns the pixel size of one terminal cell. The XTWINOPS
+// answer from QueryCellSize wins: it comes from the terminal itself,
+// while TIOCGWINSZ pixel fields pass through muxes (tmux, cmux) that
+// often report whole-window geometry for a differently-sized pane.
 func CellSize() (cw, ch float64) {
-	if cw, ch, ok := ioctlCellSize(); ok {
-		return cw, ch
-	}
 	if queriedCell.cw > 0 {
 		return queriedCell.cw, queriedCell.ch
+	}
+	if cw, ch, ok := ioctlCellSize(); ok {
+		return cw, ch
 	}
 	return 8, 16
 }
@@ -37,11 +39,13 @@ func ioctlCellSize() (float64, float64, bool) {
 	return float64(ws.Xpixel) / float64(ws.Col), float64(ws.Ypixel) / float64(ws.Row), true
 }
 
-// QueryCellSize probes the terminal once with XTWINOPS "CSI 16 t" for cases
-// where the pty reports no pixel size (tmux panes, some terminals). Must run
-// before the TUI owns stdin; the result is cached for CellSize.
+// QueryCellSize probes the terminal once with XTWINOPS "CSI 16 t". Must run
+// before the TUI owns stdin; the result is cached for CellSize. On graphics
+// terminals the probe always runs — even when the ioctl answers — because
+// mux-forwarded pixel sizes are unreliable. Elsewhere it runs only when the
+// ioctl has nothing, so plain terminals skip the 300ms probe timeout.
 func QueryCellSize() {
-	if _, _, ok := ioctlCellSize(); ok {
+	if _, _, ok := ioctlCellSize(); ok && !supportsKitty() {
 		return
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)

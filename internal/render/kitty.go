@@ -43,8 +43,13 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 	maxCols = min(maxCols, len(diacritics))
 	maxRows = min(maxRows, len(diacritics))
 	b := img.Bounds()
-	cols, rows, pw, ph := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, k.cw, k.ch)
+	cols, rows, _, _ := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, k.cw, k.ch)
 
+	// Scale to exactly the grid's pixel size. The terminal fits the bitmap
+	// to the placement grid anchored top-left; any aspect slack would show
+	// as an off-center image, so leave none.
+	pw := max(1, int(float64(cols)*k.cw+0.5))
+	ph := max(1, int(float64(rows)*k.ch+0.5))
 	dst := image.NewRGBA(image.Rect(0, 0, pw, ph))
 	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
 
