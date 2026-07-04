@@ -1,0 +1,9 @@
+._*
+**/._*
+.DS_Store
+__MACOSX/
+dist/
+.agents/
+.cursor
+AGENTS.md
+docs/
