@@ -1,12 +1,16 @@
 // Package ui is the bubbletea model: two side-by-side reader panes with
-// vim keybindings, a file picker, and a browser hand-off.
+// vim keybindings, chapter/bookmark menus, OCR search, and a browser
+// hand-off.
 package ui
 
 import (
 	"fmt"
+	"image/png"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +18,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"cbzr/internal/book"
+	"cbzr/internal/bookmarks"
+	"cbzr/internal/ocr"
 	"cbzr/internal/render"
 	"cbzr/internal/server"
 )
@@ -24,6 +30,13 @@ const (
 	modeRead mode = iota
 	modePick
 	modeHelp
+	modeMenu
+	modeSearch
+)
+
+const (
+	zoomStep = 1.25
+	zoomMax  = 8.0
 )
 
 type pane struct {
@@ -33,12 +46,32 @@ type pane struct {
 	err     error
 	loading bool
 	gen     int
+
+	rot    int // quarter turns cw
+	zoom   float64
+	cx, cy float64 // view center (fractions of rotated image)
+}
+
+func newPane() *pane { return &pane{zoom: 1, cx: 0.5, cy: 0.5} }
+
+func (p *pane) resetView() { p.zoom, p.cx, p.cy = 1, 0.5, 0.5 }
+
+// search holds OCR search state for the active book.
+type search struct {
+	gen     int
+	pane    int
+	term    string
+	hits    []int
+	scanned int
+	total   int
+	running bool
 }
 
 // Model is the root bubbletea model.
 type Model struct {
 	renderer render.Renderer
 	srv      *server.Server
+	marks    *bookmarks.Store
 
 	panes  [2]*pane
 	active int
@@ -51,23 +84,46 @@ type Model struct {
 	count         string
 	status        string
 	openBrowser   func(string) error
+
+	menu    menu
+	input   string // search input buffer
+	find    search
+	ocrText map[string]string // "path\x00page" -> text
+
+	resizeGen int
 }
 
 type renderedMsg struct {
 	pane, gen, page int
+	cols, rows      int
 	res             render.Result
 	err             error
 }
 
 type prefetchedMsg struct{}
 
+type shotMsg struct {
+	path string
+	err  error
+}
+
+type ocrMsg struct {
+	gen, page int
+	text      string
+	err       error
+}
+
+type resizeSettledMsg struct{ gen int }
+
 // New builds the model, opening up to two books given on the command line.
-func New(r render.Renderer, srv *server.Server, openBrowser func(string) error, paths []string) Model {
+func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, openBrowser func(string) error, paths []string) Model {
 	m := Model{
 		renderer:    r,
 		srv:         srv,
-		panes:       [2]*pane{{}, {}},
+		marks:       marks,
+		panes:       [2]*pane{newPane(), newPane()},
 		openBrowser: openBrowser,
+		ocrText:     map[string]string{},
 	}
 	for i, p := range paths {
 		if i > 1 {
@@ -139,6 +195,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.renderer.SetCellSize(render.CellSize())
 		m.picker.SetHeight(max(1, m.height-4))
+		m.resizeGen++
+		gen := m.resizeGen
+		// Multiplexers (cmux, tmux) can settle geometry after the first
+		// resize event; render again once things go quiet.
+		settle := tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg {
+			return resizeSettledMsg{gen: gen}
+		})
+		return m, tea.Batch(m.rerenderAll(), settle)
+
+	case resizeSettledMsg:
+		if msg.gen != m.resizeGen {
+			return m, nil
+		}
+		m.renderer.SetCellSize(render.CellSize())
 		return m, m.rerenderAll()
 
 	case renderedMsg:
@@ -150,14 +220,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.err = msg.err
 		if msg.err == nil {
 			// Transmit bytes are emitted inside View so that bubbletea's
-			// renderer stays the only writer to the terminal. Writing them
-			// here would race the frame flusher and tear the APC sequence.
+			// renderer stays the only writer to the terminal.
 			p.res = msg.res
+		}
+		// The box changed while this render was in flight (e.g. a resize
+		// storm): render once more for the current geometry.
+		if cols, rows := m.imgBox(msg.pane); cols != msg.cols || rows != msg.rows {
+			return m, m.renderPane(msg.pane)
 		}
 		return m, m.prefetch(msg.pane, msg.page+1)
 
 	case prefetchedMsg:
 		return m, nil
+
+	case shotMsg:
+		if msg.err != nil {
+			m.status = "screenshot failed: " + msg.err.Error()
+		} else {
+			m.status = "saved " + msg.path
+		}
+		return m, nil
+
+	case ocrMsg:
+		return m.updateOCR(msg)
 
 	case tea.MouseMsg:
 		return m.updateMouse(msg)
@@ -169,6 +254,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeHelp:
 			m.mode = modeRead
 			return m, nil
+		case modeMenu:
+			return m.updateMenu(msg)
+		case modeSearch:
+			return m.updateSearch(msg)
 		default:
 			return m.updateRead(msg)
 		}
@@ -220,40 +309,97 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeHelp
 		return m, nil
 
-	case "l", "right", " ", "n", "j", "down":
+	// -- pages: j/k only --
+	case "j":
 		return m.turn(m.active, m.takeCount())
-
-	case "h", "left", "p", "k", "up":
+	case "k":
 		return m.turn(m.active, -m.takeCount())
-
-	case "g", "home":
+	case "g":
 		return m.goTo(m.active, m.takeCountOr(1)-1)
-
-	case "G", "end":
+	case "G":
 		p := m.panes[m.active]
 		if p.book == nil {
 			return m, nil
 		}
-		n := m.takeCountOr(p.book.Len())
-		return m.goTo(m.active, n-1)
+		return m.goTo(m.active, m.takeCountOr(p.book.Len())-1)
 
-	case "tab", "w", "ctrl+w":
+	// -- panes --
+	case "w":
 		if m.split {
 			m.active = 1 - m.active
 		}
 		return m, nil
-
-	case "s", "v":
+	case "v":
 		return m.toggleSplit()
-
 	case "x":
 		return m.closePane(m.active)
 
+	// -- menus --
+	case "tab":
+		return m.openChapters()
+	case "F":
+		return m.openBookmarks()
+
+	// -- bookmark toggle --
+	case "b":
+		p := m.panes[m.active]
+		if p.book == nil {
+			return m, nil
+		}
+		if m.marks.Toggle(p.book.Path, p.book.Title, p.page) {
+			m.status = fmt.Sprintf("bookmarked %s p.%d", p.book.Title, p.page+1)
+		} else {
+			m.status = fmt.Sprintf("removed bookmark %s p.%d", p.book.Title, p.page+1)
+		}
+		return m, nil
+
+	// -- view transforms --
+	case "R":
+		p := m.panes[m.active]
+		if p.book == nil {
+			return m, nil
+		}
+		p.rot = (p.rot + 1) & 3
+		return m, m.renderPane(m.active)
+	case "+", "=":
+		return m.zoomBy(zoomStep)
+	case "-":
+		return m.zoomBy(1 / zoomStep)
+	case "0":
+		p := m.panes[m.active]
+		if p.book == nil {
+			return m, nil
+		}
+		p.resetView()
+		return m, m.renderPane(m.active)
+	case "up", "down", "left", "right":
+		return m.pan(key)
+
+	// -- OCR search --
+	case "/":
+		p := m.panes[m.active]
+		if p.book == nil {
+			return m, nil
+		}
+		if !ocr.Available() {
+			m.status = "OCR needs tesseract on PATH"
+			return m, nil
+		}
+		m.mode = modeSearch
+		m.input = ""
+		return m, nil
+	case "n":
+		return m.gotoHit(1)
+	case "p":
+		return m.gotoHit(-1)
+
+	// -- files / misc --
+	case "S":
+		return m.screenshot()
 	case "o":
 		m.mode = modePick
 		m.pickFor = m.active
 		return m, m.picker.Init()
-
 	case "O":
 		if !m.split {
 			m.split = true
@@ -261,13 +407,10 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modePick
 		m.pickFor = 1
 		return m, m.picker.Init()
-
-	case "b":
+	case "e":
 		return m.browse()
-
 	case "r":
 		return m, m.rerenderAll()
-
 	case "esc":
 		m.count = ""
 		return m, nil
@@ -287,6 +430,71 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openBook(m.pickFor, path, cmd)
 	}
 	return m, cmd
+}
+
+func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "tab", "F":
+		m.mode = modeRead
+		return m, nil
+	case "j", "down":
+		m.menu.move(1, m.menuHeight())
+		return m, nil
+	case "k", "up":
+		m.menu.move(-1, m.menuHeight())
+		return m, nil
+	case "g":
+		m.menu.move(-len(m.menu.items), m.menuHeight())
+		return m, nil
+	case "G":
+		m.menu.move(len(m.menu.items), m.menuHeight())
+		return m, nil
+	case "enter", "l":
+		if len(m.menu.items) == 0 {
+			m.mode = modeRead
+			return m, nil
+		}
+		it := m.menu.items[m.menu.cursor]
+		m.mode = modeRead
+		p := m.panes[m.active]
+		if it.path != "" && (p.book == nil || p.book.Path != it.path) {
+			mm, cmd := m.openBook(m.active, it.path, nil)
+			mdl := mm.(Model)
+			mdl2, cmd2 := mdl.goTo(mdl.active, it.page)
+			return mdl2, tea.Batch(cmd, cmd2)
+		}
+		return m.goTo(m.active, it.page)
+	}
+	return m, nil
+}
+
+func (m Model) menuHeight() int { return max(1, m.height-3) }
+
+func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode = modeRead
+		return m, nil
+	case "enter":
+		m.mode = modeRead
+		term := strings.TrimSpace(m.input)
+		if term == "" {
+			return m, nil
+		}
+		return m.startSearch(term)
+	case "backspace":
+		if len(m.input) > 0 {
+			m.input = m.input[:len(m.input)-1]
+		}
+		return m, nil
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.input += string(msg.Runes)
+		} else if msg.Type == tea.KeySpace {
+			m.input += " "
+		}
+		return m, nil
+	}
 }
 
 // ---- actions ---------------------------------------------------------------
@@ -323,8 +531,45 @@ func (m Model) goTo(i, page int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p.page = page
+	p.resetView()
 	return m, m.renderPane(i)
 }
+
+func (m Model) zoomBy(f float64) (tea.Model, tea.Cmd) {
+	p := m.panes[m.active]
+	if p.book == nil {
+		return m, nil
+	}
+	p.zoom = clamp(p.zoom*f, 1, zoomMax)
+	if p.zoom <= 1.001 {
+		p.resetView()
+	}
+	return m, m.renderPane(m.active)
+}
+
+func (m Model) pan(key string) (tea.Model, tea.Cmd) {
+	p := m.panes[m.active]
+	if p.book == nil || p.zoom <= 1.001 {
+		return m, nil
+	}
+	step := 0.15 / p.zoom
+	switch key {
+	case "up":
+		p.cy -= step
+	case "down":
+		p.cy += step
+	case "left":
+		p.cx -= step
+	case "right":
+		p.cx += step
+	}
+	half := 0.5 / p.zoom
+	p.cx = clamp(p.cx, half, 1-half)
+	p.cy = clamp(p.cy, half, 1-half)
+	return m, m.renderPane(m.active)
+}
+
+func clamp(v, lo, hi float64) float64 { return min(hi, max(lo, v)) }
 
 func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 	b, err := book.Open(path)
@@ -336,23 +581,21 @@ func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 	if p.book != nil {
 		p.book.Close() //nolint:errcheck
 	}
+	*p = *newPane()
 	p.book = b
-	p.page = 0
-	p.res = render.Result{}
-	p.err = nil
 	m.syncServer()
 	return m, tea.Batch(prev, m.renderPane(i))
 }
 
 func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
 	if m.split {
-		// :only — keep the active pane's book in pane 0.
+		// keep the active pane's book in pane 0.
 		if m.active == 1 {
 			m.closeBook(0)
-			m.panes[0], m.panes[1] = m.panes[1], &pane{}
+			m.panes[0], m.panes[1] = m.panes[1], newPane()
 		} else {
 			m.closeBook(1)
-			m.panes[1] = &pane{}
+			m.panes[1] = newPane()
 		}
 		m.split = false
 		m.active = 0
@@ -371,11 +614,10 @@ func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
 
 func (m Model) closePane(i int) (tea.Model, tea.Cmd) {
 	m.closeBook(i)
-	m.panes[i] = &pane{}
+	m.panes[i] = newPane()
 	if m.split {
-		// Keep the surviving book in pane 0.
 		if i == 0 {
-			m.panes[0], m.panes[1] = m.panes[1], &pane{}
+			m.panes[0], m.panes[1] = m.panes[1], newPane()
 		}
 		m.split = false
 		m.active = 0
@@ -418,14 +660,214 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ---- menus -------------------------------------------------------------------
+
+func (m Model) openChapters() (tea.Model, tea.Cmd) {
+	p := m.panes[m.active]
+	if p.book == nil {
+		return m, nil
+	}
+	chs := p.book.Chapters()
+	if len(chs) == 0 {
+		m.status = "no chapter info in this book"
+		return m, nil
+	}
+	items := make([]menuItem, len(chs))
+	cursor := 0
+	for i, c := range chs {
+		items[i] = menuItem{
+			label: fmt.Sprintf("%-40s p.%d", ansi.Truncate(c.Title, 40, "…"), c.Page+1),
+			page:  c.Page,
+		}
+		if c.Page <= p.page {
+			cursor = i
+		}
+	}
+	m.menu = menu{title: "Chapters — " + p.book.Title, items: items, cursor: cursor}
+	m.menu.move(0, m.menuHeight())
+	m.mode = modeMenu
+	return m, nil
+}
+
+func (m Model) openBookmarks() (tea.Model, tea.Cmd) {
+	items := make([]menuItem, 0, len(m.marks.Marks))
+	for _, mk := range m.marks.Marks {
+		items = append(items, menuItem{
+			label: fmt.Sprintf("%-36s p.%-5d %s",
+				ansi.Truncate(mk.Title, 36, "…"), mk.Page+1, mk.Added.Format("2006-01-02")),
+			page: mk.Page,
+			path: mk.Book,
+		})
+	}
+	m.menu = menu{title: "Bookmarks", items: items}
+	m.mode = modeMenu
+	return m, nil
+}
+
+// ---- screenshot ----------------------------------------------------------------
+
+func (m Model) screenshot() (tea.Model, tea.Cmd) {
+	p := m.panes[m.active]
+	if p.book == nil {
+		return m, nil
+	}
+	b, page, rot, zoom, cx, cy := p.book, p.page, p.rot, p.zoom, p.cx, p.cy
+	return m, func() tea.Msg {
+		img, err := b.Page(page)
+		if err != nil {
+			return shotMsg{err: err}
+		}
+		img = render.Transform(img, rot, zoom, cx, cy)
+		dir := os.Getenv("CBZR_SHOT_DIR")
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		name := fmt.Sprintf("cbzr-%s-p%03d.png", sanitize(b.Title), page+1)
+		path := filepath.Join(dir, name)
+		f, err := os.Create(path)
+		if err != nil {
+			return shotMsg{err: err}
+		}
+		defer f.Close()
+		if err := png.Encode(f, img); err != nil {
+			return shotMsg{err: err}
+		}
+		return shotMsg{path: path}
+	}
+}
+
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		case r == ' ':
+			return '_'
+		}
+		return -1
+	}, s)
+}
+
+// ---- OCR search -----------------------------------------------------------------
+
+func (m Model) startSearch(term string) (tea.Model, tea.Cmd) {
+	p := m.panes[m.active]
+	if p.book == nil {
+		return m, nil
+	}
+	m.find = search{
+		gen:     m.find.gen + 1,
+		pane:    m.active,
+		term:    strings.ToLower(term),
+		total:   p.book.Len(),
+		running: true,
+	}
+	m.status = fmt.Sprintf("OCR search %q…", term)
+	return m, m.ocrPage(m.find.gen, 0)
+}
+
+// ocrPage OCRs one page (cache-aside) and reports back; the update chains
+// the next page, which keeps cancellation (gen bump) cheap.
+func (m Model) ocrPage(gen, page int) tea.Cmd {
+	p := m.panes[m.find.pane]
+	if p.book == nil || page >= p.book.Len() {
+		return nil
+	}
+	b := p.book
+	key := b.Path + "\x00" + strconv.Itoa(page)
+	if text, ok := m.ocrText[key]; ok {
+		return func() tea.Msg { return ocrMsg{gen: gen, page: page, text: text} }
+	}
+	return func() tea.Msg {
+		img, err := b.Page(page)
+		if err != nil {
+			return ocrMsg{gen: gen, page: page, err: err}
+		}
+		text, err := ocr.Text(img)
+		return ocrMsg{gen: gen, page: page, text: text, err: err}
+	}
+}
+
+func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.find.gen || !m.find.running {
+		return m, nil
+	}
+	p := m.panes[m.find.pane]
+	if p.book == nil {
+		m.find.running = false
+		return m, nil
+	}
+	if msg.err == nil {
+		key := p.book.Path + "\x00" + strconv.Itoa(msg.page)
+		m.ocrText[key] = msg.text
+		if strings.Contains(strings.ToLower(msg.text), m.find.term) {
+			m.find.hits = append(m.find.hits, msg.page)
+		}
+	}
+	m.find.scanned = msg.page + 1
+	if m.find.scanned >= m.find.total {
+		m.find.running = false
+		m.status = fmt.Sprintf("OCR done: %d hit(s) for %q · n/p to jump", len(m.find.hits), m.find.term)
+		if len(m.find.hits) > 0 && m.active == m.find.pane {
+			return m.gotoHit(1)
+		}
+		return m, nil
+	}
+	return m, m.ocrPage(msg.gen, msg.page+1)
+}
+
+func (m Model) gotoHit(dir int) (tea.Model, tea.Cmd) {
+	if m.find.term == "" {
+		m.status = "no search — press / first"
+		return m, nil
+	}
+	if len(m.find.hits) == 0 {
+		if m.find.running {
+			m.status = fmt.Sprintf("OCR %d/%d · no hits yet", m.find.scanned, m.find.total)
+		} else {
+			m.status = fmt.Sprintf("no hits for %q", m.find.term)
+		}
+		return m, nil
+	}
+	p := m.panes[m.find.pane]
+	if p.book == nil {
+		return m, nil
+	}
+	cur := p.page
+	next := -1
+	if dir > 0 {
+		for _, h := range m.find.hits {
+			if h > cur {
+				next = h
+				break
+			}
+		}
+		if next < 0 {
+			next = m.find.hits[0] // wrap
+		}
+	} else {
+		for i := len(m.find.hits) - 1; i >= 0; i-- {
+			if m.find.hits[i] < cur {
+				next = m.find.hits[i]
+				break
+			}
+		}
+		if next < 0 {
+			next = m.find.hits[len(m.find.hits)-1] // wrap
+		}
+	}
+	m.active = m.find.pane
+	m.status = fmt.Sprintf("hit %s p.%d (%d total)", m.find.term, next+1, len(m.find.hits))
+	return m.goTo(m.find.pane, next)
+}
+
 // ---- rendering commands ------------------------------------------------------
 
 func (m *Model) rerenderAll() tea.Cmd {
 	var cmds []tea.Cmd
 	for i := 0; i < m.paneCount(); i++ {
-		// Drop stale results so old placeholder grids (sized for the old
-		// box) never linger, and so identical new transmit bytes still
-		// differ from the previous frame and get re-sent.
+		// Drop stale results so old placeholder grids never linger and new
+		// transmit bytes always differ from the previous frame.
 		m.panes[i].res = render.Result{}
 		if c := m.renderPane(i); c != nil {
 			cmds = append(cmds, c)
@@ -442,16 +884,18 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	p.gen++
 	p.loading = true
 	gen, page, b := p.gen, p.page, p.book
+	rot, zoom, cx, cy := p.rot, p.zoom, p.cx, p.cy
 	cols, rows := m.imgBox(i)
 	r := m.renderer
 	id := uint32(i + 1)
 	return func() tea.Msg {
 		img, err := b.Page(page)
 		if err != nil {
-			return renderedMsg{pane: i, gen: gen, page: page, err: err}
+			return renderedMsg{pane: i, gen: gen, page: page, cols: cols, rows: rows, err: err}
 		}
+		img = render.Transform(img, rot, zoom, cx, cy)
 		res, err := r.Render(img, id, cols, rows)
-		return renderedMsg{pane: i, gen: gen, page: page, res: res, err: err}
+		return renderedMsg{pane: i, gen: gen, page: page, cols: cols, rows: rows, res: res, err: err}
 	}
 }
 
@@ -487,6 +931,8 @@ func (m Model) View() string {
 		return head + "\n\n" + m.picker.View() + "\n" + hint
 	case modeHelp:
 		return m.helpView()
+	case modeMenu:
+		return m.menu.view(m.width, m.height)
 	}
 
 	paneViews := make([]string, 0, 3)
@@ -500,8 +946,7 @@ func (m Model) View() string {
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, paneViews...)
 	// Graphics transmissions ride on line 0 as zero-width escapes: one
-	// writer, one frame, no torn APC sequences. The line diff re-sends
-	// them only when they change.
+	// writer, one frame, no torn APC sequences.
 	var oob strings.Builder
 	for i := 0; i < m.paneCount(); i++ {
 		oob.Write(m.panes[i].res.Transmit)
@@ -516,6 +961,19 @@ func (m Model) paneView(i int) string {
 	title := "[empty]  press o to open"
 	if p.book != nil {
 		title = fmt.Sprintf("%s  %d/%d", p.book.Title, p.page+1, p.book.Len())
+		if m.marks.Has(p.book.Path, p.page) {
+			title = "🔖 " + title
+		}
+		var mods []string
+		if p.rot != 0 {
+			mods = append(mods, fmt.Sprintf("%d°", p.rot*90))
+		}
+		if p.zoom > 1.001 {
+			mods = append(mods, fmt.Sprintf("%.2gx", p.zoom))
+		}
+		if len(mods) > 0 {
+			title += "  [" + strings.Join(mods, " ") + "]"
+		}
 		if p.loading {
 			title += " …"
 		}
@@ -542,17 +1000,23 @@ func (m Model) paneView(i int) string {
 }
 
 func (m Model) statusView() string {
+	if m.mode == modeSearch {
+		return titleActive.Render(" /" + m.input + "▏") + dim.Render("  OCR search · enter run · esc cancel")
+	}
 	left := " " + m.renderer.Name()
 	if m.count != "" {
 		left += "  ·  " + m.count
 	}
+	if m.find.running {
+		left += fmt.Sprintf("  ·  OCR %d/%d (%d hits)", m.find.scanned, m.find.total, len(m.find.hits))
+	}
 	if port := m.srv.Port(); port > 0 {
-		left += fmt.Sprintf("  ·  http://127.0.0.1:%d/", port)
+		left += fmt.Sprintf("  ·  :%d", port)
 	}
 	if m.status != "" {
 		left += "  ·  " + m.status
 	}
-	right := "h/l pages  s split  tab pane  o open  b browser  ? help  q quit "
+	right := "j/k pages  v split  w pane  tab chapters  / find  ? help  q quit "
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		return dim.Render(ansi.Truncate(left, m.width, "…"))
@@ -563,15 +1027,22 @@ func (m Model) statusView() string {
 func (m Model) helpView() string {
 	help := `cbzr — terminal .cbz reader
 
-  h l ← →        prev / next page      (counts work: 5l)
-  j k ↓ ↑        next / prev page
-  space, n / p   next / prev page
+  j / k          next / prev page      (counts work: 5j)
   g / G          first / last page     (42G → page 42)
-  tab, w         switch pane
-  s, v           toggle split          (keeps the active pane)
+  w              switch pane
+  v              toggle split          (keeps the active pane)
+  tab            chapter menu          (ComicInfo.xml or folders)
+  b              toggle bookmark on this page
+  F              bookmarks menu
+  S              screenshot page → PNG (CBZR_SHOT_DIR or cwd)
+  R              rotate 90° cw
+  + / -          zoom in / out
+  0              reset zoom
+  arrows         pan while zoomed
+  /              OCR search (tesseract) · n / p next / prev hit
   o / O          open file in pane / in split
   x              close pane
-  b              open current book in browser (localhost:5xxxx)
+  e              open current book in browser (localhost:5xxxx)
   r              re-render
   ?              this help · any key to close
   q              quit`

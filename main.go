@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"cbzr/internal/bookmarks"
 	"cbzr/internal/render"
 	"cbzr/internal/server"
 	"cbzr/internal/ui"
@@ -38,7 +39,7 @@ func main() {
 	srv := server.New()
 	defer srv.Close() //nolint:errcheck
 
-	m := ui.New(r, srv, openBrowser, paths)
+	m := ui.New(r, srv, bookmarks.Load(), openBrowser, paths)
 	srv.SetBooks(m.Books())
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())

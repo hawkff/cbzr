@@ -36,6 +36,9 @@ type Book struct {
 	rc    *zip.ReadCloser
 	pages []*zip.File
 
+	chapOnce sync.Once
+	chaps    []Chapter
+
 	mu    sync.Mutex
 	cache map[int]image.Image // small LRU-ish cache
 	order []int
