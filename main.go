@@ -45,7 +45,7 @@ func main() {
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := p.Run()
 	// Free terminal-side images after the program released the tty.
-	for id := uint32(1); id <= 2; id++ {
+	for id := uint32(1); id <= 3; id++ {
 		if b := r.Delete(id); len(b) > 0 {
 			os.Stdout.Write(b) //nolint:errcheck
 		}

@@ -45,6 +45,7 @@ type pane struct {
 	book    *book.Book
 	page    int
 	res     render.Result
+	res2    render.Result // right page in spread mode
 	err     error
 	loading bool
 	gen     int
@@ -78,6 +79,7 @@ type Model struct {
 	panes  [2]*pane
 	active int
 	split  bool
+	spread bool // two pages side by side in a single pane
 
 	width, height int
 	mode          mode
@@ -96,10 +98,10 @@ type Model struct {
 }
 
 type renderedMsg struct {
-	pane, gen, page int
-	cols, rows      int
-	res             render.Result
-	err             error
+	pane, slot, gen, page int
+	cols, rows            int
+	res                   render.Result
+	err                   error
 }
 
 type prefetchedMsg struct{}
@@ -183,9 +185,15 @@ func (m Model) paneBox(i int) (w, h int) {
 	return max(1, m.width-1-left), h
 }
 
-// imgBox returns the image area inside pane i.
+// spreadActive reports whether two-page spread rendering is in effect.
+func (m Model) spreadActive() bool { return m.spread && !m.split }
+
+// imgBox returns the image area for one page slot inside pane i.
 func (m Model) imgBox(i int) (cols, rows int) {
 	w, h := m.paneBox(i)
+	if m.spreadActive() {
+		w = (w - 1) / 2
+	}
 	return max(1, w-2), max(1, h-2)
 }
 
@@ -218,6 +226,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != p.gen {
 			return m, nil // stale
 		}
+		if msg.slot == 1 {
+			if msg.err == nil {
+				p.res2 = msg.res
+			}
+			return m, nil
+		}
 		p.loading = false
 		p.err = msg.err
 		if msg.err == nil {
@@ -230,7 +244,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cols, rows := m.imgBox(msg.pane); cols != msg.cols || rows != msg.rows {
 			return m, m.renderPane(msg.pane)
 		}
-		return m, m.prefetch(msg.pane, msg.page+1)
+		step := 1
+		if m.spreadActive() {
+			step = 2
+		}
+		return m, m.prefetch(msg.pane, msg.page+step)
 
 	case prefetchedMsg:
 		return m, nil
@@ -351,6 +369,13 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "v":
 		return m.toggleSplit()
+	case "s":
+		if m.split {
+			m.status = "spread needs a single pane (v to unsplit)"
+			return m, nil
+		}
+		m.spread = !m.spread
+		return m, m.rerenderAll()
 	case "x":
 		return m.closePane(m.active)
 
@@ -642,7 +667,11 @@ func (m Model) turn(i, delta int) (tea.Model, tea.Cmd) {
 	if p.book == nil {
 		return m, nil
 	}
-	return m.goTo(i, p.page+delta)
+	step := 1
+	if m.spreadActive() {
+		step = 2 // one keypress flips a whole spread
+	}
+	return m.goTo(i, p.page+delta*step)
 }
 
 func (m Model) goTo(i, page int) (tea.Model, tea.Cmd) {
@@ -1000,6 +1029,7 @@ func (m *Model) rerenderAll() tea.Cmd {
 		// Drop stale results so old placeholder grids never linger and new
 		// transmit bytes always differ from the previous frame.
 		m.panes[i].res = render.Result{}
+		m.panes[i].res2 = render.Result{}
 		if c := m.renderPane(i); c != nil {
 			cmds = append(cmds, c)
 		}
@@ -1018,16 +1048,24 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	rot, zoom, cx, cy := p.rot, p.zoom, p.cx, p.cy
 	cols, rows := m.imgBox(i)
 	r := m.renderer
-	id := uint32(i + 1)
-	return func() tea.Msg {
-		img, err := b.Page(page)
-		if err != nil {
-			return renderedMsg{pane: i, gen: gen, page: page, cols: cols, rows: rows, err: err}
+	mk := func(slot, pg int, id uint32) tea.Cmd {
+		return func() tea.Msg {
+			img, err := b.Page(pg)
+			if err != nil {
+				return renderedMsg{pane: i, slot: slot, gen: gen, page: page, cols: cols, rows: rows, err: err}
+			}
+			img = render.Transform(img, rot, zoom, cx, cy)
+			res, err := r.Render(img, id, cols, rows)
+			return renderedMsg{pane: i, slot: slot, gen: gen, page: page, cols: cols, rows: rows, res: res, err: err}
 		}
-		img = render.Transform(img, rot, zoom, cx, cy)
-		res, err := r.Render(img, id, cols, rows)
-		return renderedMsg{pane: i, gen: gen, page: page, cols: cols, rows: rows, res: res, err: err}
 	}
+	p.res2 = render.Result{}
+	cmds := []tea.Cmd{mk(0, page, uint32(i+1))}
+	if m.spreadActive() && page+1 < b.Len() {
+		// Image id 3 is reserved for the spread's right page.
+		cmds = append(cmds, mk(1, page+1, 3))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) prefetch(i, page int) tea.Cmd {
@@ -1087,6 +1125,7 @@ func (m Model) View() string {
 	var oob strings.Builder
 	for i := 0; i < m.paneCount(); i++ {
 		oob.Write(m.panes[i].res.Transmit)
+		oob.Write(m.panes[i].res2.Transmit)
 	}
 	return oob.String() + body + "\n" + m.statusView()
 }
@@ -1097,7 +1136,11 @@ func (m Model) paneView(i int) string {
 
 	title := "[empty]  press o to open"
 	if p.book != nil {
-		title = fmt.Sprintf("%s  %d/%d", p.book.Title, p.page+1, p.book.Len())
+		pages := fmt.Sprintf("%d/%d", p.page+1, p.book.Len())
+		if m.spreadActive() && p.page+1 < p.book.Len() {
+			pages = fmt.Sprintf("%d-%d/%d", p.page+1, p.page+2, p.book.Len())
+		}
+		title = fmt.Sprintf("%s  %s", p.book.Title, pages)
 		if m.marks.Has(p.book.Path, p.page) {
 			title = "🔖 " + title
 		}
@@ -1129,6 +1172,15 @@ func (m Model) paneView(i int) string {
 		content = dim.Render("no book")
 	case p.res.Rows == 0:
 		content = dim.Render("loading…")
+	case m.spreadActive():
+		half := (w - 1) / 2
+		left := lipgloss.Place(half, h-1, lipgloss.Center, lipgloss.Center, strings.Join(p.res.Lines, "\n"))
+		right := ""
+		if p.res2.Rows > 0 {
+			right = strings.Join(p.res2.Lines, "\n")
+		}
+		rightBox := lipgloss.Place(w-half, h-1, lipgloss.Center, lipgloss.Center, right)
+		return titleLine + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, rightBox)
 	default:
 		content = strings.Join(p.res.Lines, "\n")
 	}
@@ -1168,6 +1220,7 @@ func (m Model) helpView() string {
   g / G          first / last page     (42G → page 42)
   w              switch pane
   v              toggle split          (keeps the active pane)
+  s              toggle two-page spread (single pane)
   tab            chapter menu          (ComicInfo.xml or folders)
   b              toggle bookmark on this page
   F              bookmarks menu
