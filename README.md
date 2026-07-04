@@ -17,7 +17,9 @@ Follows yazi's adapter idea: probe the terminal, pick the best backend.
 - `kitty`: kitty graphics protocol with Unicode placeholders (U=1). Images are
   transmitted out of band; the TUI only prints placeholder cells, so bubbletea
   repaints and split-screen joins work without clipping regions. Used on
-  kitty, ghostty, WezTerm; wrapped in passthrough sequences under tmux.
+  kitty and ghostty. Under tmux, cbzr detects the outer terminal, enables
+  allow-passthrough (tmux >= 3.3), and probes the cell pixel size via
+  XTWINOPS, so pages stay sharp instead of falling back to half blocks.
 - `halfblock`: U+2580 with truecolor fg/bg, two pixels per cell. Works in any
   24-bit terminal.
 
