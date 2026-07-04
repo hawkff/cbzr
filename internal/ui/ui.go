@@ -1110,16 +1110,21 @@ func (m Model) View() string {
 		return m.menu.view(m.width, m.height, footer)
 	}
 
-	paneViews := make([]string, 0, 3)
-	for i := 0; i < m.paneCount(); i++ {
-		paneViews = append(paneViews, m.paneView(i))
-		if m.split && i == 0 {
-			_, h := m.paneBox(0)
-			sep := strings.TrimSuffix(strings.Repeat("│\n", h), "\n")
-			paneViews = append(paneViews, dim.Render(sep))
+	// Compose the frame manually: width libraries miscount kitty
+	// placeholder runes, so panes are padded by known cell counts and
+	// zipped row by row.
+	var body string
+	if m.split {
+		left, right := m.paneLines(0), m.paneLines(1)
+		sep := dim.Render("│")
+		rows := make([]string, len(left))
+		for r := range left {
+			rows[r] = left[r] + sep + right[r]
 		}
+		body = strings.Join(rows, "\n")
+	} else {
+		body = strings.Join(m.paneLines(0), "\n")
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, paneViews...)
 	// Graphics transmissions ride on line 0 as zero-width escapes: one
 	// writer, one frame, no torn APC sequences.
 	var oob strings.Builder
@@ -1130,7 +1135,43 @@ func (m Model) View() string {
 	return oob.String() + body + "\n" + m.statusView()
 }
 
-func (m Model) paneView(i int) string {
+// centerCells centers a block of lines, each exactly cols terminal cells
+// wide, in a w x h box. Padding is computed from cols, never from string
+// measurement, so placeholder runes cannot skew it.
+func centerCells(lines []string, cols, w, h int) []string {
+	out := make([]string, h)
+	gap := max(0, w-cols)
+	lp := strings.Repeat(" ", gap/2)
+	rp := strings.Repeat(" ", gap-gap/2)
+	blank := strings.Repeat(" ", w)
+	top := max(0, (h-len(lines))/2)
+	for i := range out {
+		j := i - top
+		if j >= 0 && j < len(lines) {
+			out[i] = lp + lines[j] + rp
+		} else {
+			out[i] = blank
+		}
+	}
+	return out
+}
+
+// centerText centers a styled single-line string (safe to measure).
+func centerText(s string, w int) string {
+	s = ansi.Truncate(s, w, "…")
+	return centerCells([]string{s}, ansi.StringWidth(s), w, 1)[0]
+}
+
+// imgLines yields a rendered page centered in a w x h box, or nil when the
+// result does not fit the box (a re-render is already in flight).
+func imgLines(res render.Result, w, h int) []string {
+	if res.Rows == 0 || res.Cols > w || res.Rows > h {
+		return nil
+	}
+	return centerCells(res.Lines, res.Cols, w, h)
+}
+
+func (m Model) paneLines(i int) []string {
 	p := m.panes[i]
 	w, h := m.paneBox(i)
 
@@ -1162,30 +1203,44 @@ func (m Model) paneView(i int) string {
 	if i == m.active {
 		ts = titleActive
 	}
-	titleLine := lipgloss.PlaceHorizontal(w, lipgloss.Center, ts.Render(ansi.Truncate(title, w, "…")))
 
-	var content string
+	lines := make([]string, 0, h)
+	lines = append(lines, centerText(ts.Render(ansi.Truncate(title, w, "…")), w))
+	body := h - 1
+
+	msg := ""
 	switch {
 	case p.err != nil:
-		content = errStyle.Render(ansi.Truncate(p.err.Error(), max(1, w-2), "…"))
+		msg = errStyle.Render(ansi.Truncate(p.err.Error(), max(1, w-2), "…"))
 	case p.book == nil:
-		content = dim.Render("no book")
-	case p.res.Rows == 0:
-		content = dim.Render("loading…")
-	case m.spreadActive():
-		half := (w - 1) / 2
-		left := lipgloss.Place(half, h-1, lipgloss.Center, lipgloss.Center, strings.Join(p.res.Lines, "\n"))
-		right := ""
-		if p.res2.Rows > 0 {
-			right = strings.Join(p.res2.Lines, "\n")
-		}
-		rightBox := lipgloss.Place(w-half, h-1, lipgloss.Center, lipgloss.Center, right)
-		return titleLine + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, rightBox)
-	default:
-		content = strings.Join(p.res.Lines, "\n")
+		msg = dim.Render("no book")
 	}
-	img := lipgloss.Place(w, h-1, lipgloss.Center, lipgloss.Center, content)
-	return titleLine + "\n" + img
+	if msg != "" {
+		return append(lines, centerCells([]string{msg}, ansi.StringWidth(msg), w, body)...)
+	}
+
+	if m.spreadActive() {
+		hw := (w - 1) / 2
+		wr := w - 1 - hw
+		left := imgLines(p.res, hw, body)
+		right := imgLines(p.res2, wr, body)
+		if left == nil {
+			left = centerCells([]string{dim.Render("loading…")}, 8, hw, body)
+		}
+		if right == nil {
+			right = centerCells([]string{""}, 0, wr, body)
+		}
+		for r := 0; r < body; r++ {
+			lines = append(lines, left[r]+" "+right[r])
+		}
+		return lines
+	}
+
+	img := imgLines(p.res, w, body)
+	if img == nil {
+		img = centerCells([]string{dim.Render("loading…")}, 8, w, body)
+	}
+	return append(lines, img...)
 }
 
 func (m Model) statusView() string {
