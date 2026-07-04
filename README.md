@@ -27,22 +27,34 @@ Follows yazi's adapter idea: probe the terminal, pick the best backend.
 
 | key | action |
 |---|---|
-| `h` `l`, `←` `→`, `j` `k`, space, `n` `p` | prev / next page (counts: `5l`) |
+| `j` / `k` | next / prev page (counts: `5j`) |
 | `g` / `G` | first / last page (`42G` → page 42) |
-| `tab`, `w` | switch pane |
-| `s`, `v` | toggle split (keeps active pane) |
+| `w` | switch pane |
+| `v` | toggle split (keeps active pane) |
+| `tab` | chapter menu (ComicInfo.xml bookmarks or archive folders) |
+| `b` | toggle bookmark on this page |
+| `F` | bookmarks menu (persisted in the user config dir) |
+| `S` | screenshot page to PNG (`CBZR_SHOT_DIR` or cwd) |
+| `R` | rotate 90° cw |
+| `+` / `-` / `0` | zoom in / out / reset |
+| arrows | pan while zoomed |
+| `/` | OCR search via tesseract (`CBZR_OCR_LANG`, default `eng`) |
+| `n` / `p` | next / prev search hit |
 | `o` / `O` | open file in pane / in split |
 | `x` | close pane |
-| `b` | open current book in browser |
+| `e` | open current book in browser |
 | `r` | re-render |
 | `?` | help |
 | `q` | quit |
 
 Mouse: wheel turns pages in the pane under the cursor, click focuses a pane.
 
+OCR search needs `tesseract` on PATH (`brew install tesseract`). Pages are
+scanned in the background and cached; `n`/`p` jump between hits and wrap.
+
 ## Browser
 
-`b` binds `127.0.0.1` on a random port in 50000-59999 and opens the current
+`e` binds `127.0.0.1` on a random port in 50000-59999 and opens the current
 book at the current page. The web reader has the same `h`/`l`/`g`/`G` keys.
 `/` lists both open books.
 
