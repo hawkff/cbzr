@@ -4,7 +4,6 @@ package ui
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -39,7 +38,6 @@ type pane struct {
 // Model is the root bubbletea model.
 type Model struct {
 	renderer render.Renderer
-	tty      io.Writer
 	srv      *server.Server
 
 	panes  [2]*pane
@@ -64,10 +62,9 @@ type renderedMsg struct {
 type prefetchedMsg struct{}
 
 // New builds the model, opening up to two books given on the command line.
-func New(r render.Renderer, tty io.Writer, srv *server.Server, openBrowser func(string) error, paths []string) Model {
+func New(r render.Renderer, srv *server.Server, openBrowser func(string) error, paths []string) Model {
 	m := Model{
 		renderer:    r,
-		tty:         tty,
 		srv:         srv,
 		panes:       [2]*pane{{}, {}},
 		openBrowser: openBrowser,
@@ -152,10 +149,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.loading = false
 		p.err = msg.err
 		if msg.err == nil {
+			// Transmit bytes are emitted inside View so that bubbletea's
+			// renderer stays the only writer to the terminal. Writing them
+			// here would race the frame flusher and tear the APC sequence.
 			p.res = msg.res
-			if len(msg.res.Transmit) > 0 && m.tty != nil {
-				m.tty.Write(msg.res.Transmit) //nolint:errcheck
-			}
 		}
 		return m, m.prefetch(msg.pane, msg.page+1)
 
@@ -359,7 +356,6 @@ func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
 		}
 		m.split = false
 		m.active = 0
-		m.deleteImage(2)
 		m.syncServer()
 		return m, m.rerenderAll()
 	}
@@ -383,7 +379,6 @@ func (m Model) closePane(i int) (tea.Model, tea.Cmd) {
 		}
 		m.split = false
 		m.active = 0
-		m.deleteImage(2)
 	}
 	m.syncServer()
 	return m, m.rerenderAll()
@@ -392,12 +387,6 @@ func (m Model) closePane(i int) (tea.Model, tea.Cmd) {
 func (m *Model) closeBook(i int) {
 	if m.panes[i].book != nil {
 		m.panes[i].book.Close() //nolint:errcheck
-	}
-}
-
-func (m *Model) deleteImage(id uint32) {
-	if b := m.renderer.Delete(id); len(b) > 0 && m.tty != nil {
-		m.tty.Write(b) //nolint:errcheck
 	}
 }
 
@@ -434,6 +423,10 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 func (m *Model) rerenderAll() tea.Cmd {
 	var cmds []tea.Cmd
 	for i := 0; i < m.paneCount(); i++ {
+		// Drop stale results so old placeholder grids (sized for the old
+		// box) never linger, and so identical new transmit bytes still
+		// differ from the previous frame and get re-sent.
+		m.panes[i].res = render.Result{}
 		if c := m.renderPane(i); c != nil {
 			cmds = append(cmds, c)
 		}
@@ -506,7 +499,14 @@ func (m Model) View() string {
 		}
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, paneViews...)
-	return body + "\n" + m.statusView()
+	// Graphics transmissions ride on line 0 as zero-width escapes: one
+	// writer, one frame, no torn APC sequences. The line diff re-sends
+	// them only when they change.
+	var oob strings.Builder
+	for i := 0; i < m.paneCount(); i++ {
+		oob.Write(m.panes[i].res.Transmit)
+	}
+	return oob.String() + body + "\n" + m.statusView()
 }
 
 func (m Model) paneView(i int) string {

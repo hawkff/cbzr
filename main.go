@@ -38,23 +38,15 @@ func main() {
 	srv := server.New()
 	defer srv.Close() //nolint:errcheck
 
-	// Out-of-band writer for kitty graphics transmissions.
-	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
-	if err != nil {
-		tty = os.Stderr
-	} else {
-		defer tty.Close() //nolint:errcheck
-	}
-
-	m := ui.New(r, tty, srv, openBrowser, paths)
+	m := ui.New(r, srv, openBrowser, paths)
 	srv.SetBooks(m.Books())
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := p.Run()
-	// Free any terminal-side images before leaving.
+	// Free terminal-side images after the program released the tty.
 	for id := uint32(1); id <= 2; id++ {
 		if b := r.Delete(id); len(b) > 0 {
-			tty.Write(b) //nolint:errcheck
+			os.Stdout.Write(b) //nolint:errcheck
 		}
 	}
 	if err != nil {
