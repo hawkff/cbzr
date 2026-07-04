@@ -7,3 +7,5 @@ dist/
 .cursor
 AGENTS.md
 docs/
+.git/
+._.git

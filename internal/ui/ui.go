@@ -575,5 +575,16 @@ func (m Model) helpView() string {
   r              re-render
   ?              this help · any key to close
   q              quit`
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, help)
+	// lipgloss.Place aligns every line separately; pad the block to one
+	// width first so the columns stay put.
+	lines := strings.Split(help, "\n")
+	widest := 0
+	for _, l := range lines {
+		widest = max(widest, ansi.StringWidth(l))
+	}
+	for i, l := range lines {
+		lines[i] = l + strings.Repeat(" ", widest-ansi.StringWidth(l))
+	}
+	block := strings.Join(lines, "\n")
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, block)
 }
