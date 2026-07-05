@@ -1,7 +1,6 @@
 package book
 
 import (
-	"archive/zip"
 	"fmt"
 	"image"
 	"io"
@@ -28,13 +27,14 @@ func IsImagePath(p string) bool {
 	return imageExts[strings.ToLower(filepath.Ext(p))]
 }
 
-// Book is an open .cbz archive with pages sorted in natural order.
+// Book is an open comic archive (.cbz/.zip or .cbr/.rar) with pages sorted
+// in natural order.
 type Book struct {
 	Path  string
 	Title string
 
-	rc    *zip.ReadCloser
-	pages []*zip.File
+	arc   archive
+	pages []entry
 
 	chapOnce sync.Once
 	chaps    []Chapter
@@ -46,35 +46,31 @@ type Book struct {
 
 const cacheSize = 8
 
-// Open opens a .cbz (zip) archive and indexes its image entries.
+// Open opens a comic archive and indexes its image entries.
 func Open(path string) (*Book, error) {
-	rc, err := zip.OpenReader(path)
+	arc, err := openArchive(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
 	}
-	var pages []*zip.File
-	for _, f := range rc.File {
-		if f.FileInfo().IsDir() || !IsImagePath(f.Name) {
+	var pages []entry
+	for _, e := range arc.Entries() {
+		if !IsImagePath(e.Name()) || hiddenEntry(e.Name()) {
 			continue
 		}
-		base := filepath.Base(f.Name)
-		if strings.HasPrefix(base, "._") || strings.HasPrefix(base, ".") {
-			continue // AppleDouble and hidden files
-		}
-		pages = append(pages, f)
+		pages = append(pages, e)
 	}
 	if len(pages) == 0 {
-		rc.Close()
+		arc.Close()
 		return nil, fmt.Errorf("%s: no images found", filepath.Base(path))
 	}
 	sort.Slice(pages, func(i, j int) bool {
-		return NaturalLess(pages[i].Name, pages[j].Name)
+		return NaturalLess(pages[i].Name(), pages[j].Name())
 	})
 	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	return &Book{
 		Path:  path,
 		Title: title,
-		rc:    rc,
+		arc:   arc,
 		pages: pages,
 		cache: make(map[int]image.Image),
 	}, nil
@@ -82,11 +78,11 @@ func Open(path string) (*Book, error) {
 
 // Close releases the underlying archive.
 func (b *Book) Close() error {
-	if b.rc == nil {
+	if b.arc == nil {
 		return nil
 	}
-	err := b.rc.Close()
-	b.rc = nil
+	err := b.arc.Close()
+	b.arc = nil
 	return err
 }
 
@@ -98,7 +94,7 @@ func (b *Book) PageName(i int) string {
 	if i < 0 || i >= len(b.pages) {
 		return ""
 	}
-	return filepath.Base(b.pages[i].Name)
+	return filepath.Base(b.pages[i].Name())
 }
 
 // PageBytes returns the raw encoded bytes of page i (for HTTP serving).
@@ -106,8 +102,8 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
 	}
-	f := b.pages[i]
-	r, err := f.Open()
+	e := b.pages[i]
+	r, err := e.Open()
 	if err != nil {
 		return nil, "", err
 	}
@@ -116,8 +112,7 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	mime := mimeFor(f.Name)
-	return data, mime, nil
+	return data, mimeFor(e.Name()), nil
 }
 
 // Page decodes page i, using a small in-memory cache.
@@ -139,7 +134,7 @@ func (b *Book) Page(i int) (image.Image, error) {
 	img, _, err := image.Decode(r)
 	r.Close()
 	if err != nil {
-		return nil, fmt.Errorf("decode %s: %w", filepath.Base(b.pages[i].Name), err)
+		return nil, fmt.Errorf("decode %s: %w", filepath.Base(b.pages[i].Name()), err)
 	}
 
 	b.mu.Lock()

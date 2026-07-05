@@ -35,11 +35,11 @@ func (b *Book) Chapters() []Chapter {
 }
 
 func (b *Book) comicInfoChapters() []Chapter {
-	if b.rc == nil {
+	if b.arc == nil {
 		return nil
 	}
-	for _, f := range b.rc.File {
-		if !strings.EqualFold(filepath.Base(f.Name), "comicinfo.xml") {
+	for _, f := range b.arc.Entries() {
+		if !strings.EqualFold(filepath.Base(f.Name()), "comicinfo.xml") {
 			continue
 		}
 		r, err := f.Open()
@@ -71,8 +71,8 @@ func (b *Book) folderChapters() []Chapter {
 	cur := "\x00"
 	for i, pg := range b.pages {
 		d := ""
-		if k := strings.IndexByte(pg.Name, '/'); k >= 0 {
-			d = pg.Name[:k]
+		if k := strings.IndexByte(pg.Name(), '/'); k >= 0 {
+			d = pg.Name()[:k]
 		}
 		dirs[d] = true
 		if d != cur {

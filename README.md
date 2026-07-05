@@ -1,14 +1,30 @@
 # cbzr
 
-Terminal .cbz reader. Two books side by side, vim keys, images drawn in the
-terminal, optional browser hand-off.
+Terminal comic reader for .cbz and .cbr. Two books side by side, vim keys,
+images drawn in the terminal, optional browser hand-off.
 
 ```
-cbzr one.cbz            one book
-cbzr one.cbz two.cbz    split screen
-cbzr                    file picker
-cbzr -renderer=halfblock ...
+cbzr book.cbz             one book
+cbzr one.cbz two.cbr      split screen
+cbzr                      file picker
+cbzr -renderer=halfblock  force the fallback renderer
 ```
+
+## Build
+
+```
+go build -o cbzr .
+```
+
+Requires Go 1.26+. For OCR search, install [tesseract](https://github.com/tesseract-ocr/tesseract)
+(`brew install tesseract` / `apt install tesseract-ocr`).
+
+## Formats
+
+- .cbz/.zip and .cbr/.rar. Format is detected by signature, so mislabeled
+  archives (a rar named .cbz) still open.
+- Pages sort in natural order (`p2` before `p10`) regardless of archive order.
+- Page images: jpeg, png, gif, webp, bmp.
 
 ## Rendering
 
@@ -52,22 +68,11 @@ Follows yazi's adapter idea: probe the terminal, pick the best backend.
 
 Mouse: wheel turns pages in the pane under the cursor, click focuses a pane.
 
-OCR search needs `tesseract` on PATH (`brew install tesseract`). Pages are
-scanned in the background and cached; `n`/`p` jump between hits and wrap.
+OCR search scans pages in the background and caches results; `n`/`p` jump
+between hits and wrap.
 
 ## Browser
 
 `e` binds `127.0.0.1` on a random port in 50000-59999 and opens the current
 book at the current page. The web reader has the same `h`/`l`/`g`/`G` keys.
 `/` lists both open books.
-
-## Build
-
-Built via namespace (`nsc build --output-local=dist .`), which also runs
-gofmt, go vet, and cross-compiles darwin/arm64 + linux/amd64.
-
-## Format notes
-
-- Pages sort in natural order (`p2` before `p10`), regardless of zip order.
-- jpeg, png, gif, webp, bmp pages; AppleDouble (`._*`) entries are skipped.
-- .cbr (rar) is not supported.

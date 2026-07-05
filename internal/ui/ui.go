@@ -145,7 +145,7 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, openBrow
 	}
 
 	fp := filepicker.New()
-	fp.AllowedTypes = []string{".cbz", ".zip"}
+	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar"}
 	if wd, err := os.Getwd(); err == nil {
 		fp.CurrentDirectory = wd
 	}
@@ -1095,7 +1095,7 @@ func (m Model) View() string {
 	}
 	switch m.mode {
 	case modePick:
-		head := titleActive.Render(fmt.Sprintf(" Open .cbz → pane %d ", m.pickFor+1))
+		head := titleActive.Render(fmt.Sprintf(" Open comic → pane %d ", m.pickFor+1))
 		hint := dim.Render(" enter select · h/l dirs · esc cancel")
 		return head + "\n\n" + m.picker.View() + "\n" + hint
 	case modeHelp:
@@ -1269,7 +1269,7 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	help := `cbzr — terminal .cbz reader
+	help := `cbzr — terminal comic reader (.cbz/.cbr)
 
   j / k          next / prev page      (counts work: 5j)
   g / G          first / last page     (42G → page 42)
