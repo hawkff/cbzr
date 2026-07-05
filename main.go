@@ -1,7 +1,7 @@
-// cbzr is a terminal .cbz comic/manga reader.
+// cbzr is a terminal comic reader for .cbz and .cbr.
 //
 //	cbzr one.cbz            read one book
-//	cbzr one.cbz two.cbz    split screen, two books side by side
+//	cbzr one.cbz two.cbr    split screen, two books side by side
 //	cbzr                    start with the file picker
 package main
 
@@ -20,13 +20,21 @@ import (
 	"cbzr/internal/ui"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	backend := flag.String("renderer", "", "force renderer: kitty | halfblock (default: auto)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: cbzr [flags] [book.cbz [book2.cbz]]\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("cbzr", version)
+		return
+	}
 
 	paths := flag.Args()
 	if len(paths) > 2 {

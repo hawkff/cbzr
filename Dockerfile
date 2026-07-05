@@ -1,13 +1,19 @@
 # Build/check container for cbzr. Used with:
-#   nsc build --output-local=dist .
+#   nsc build --build-arg VERSION=v0.1.0 --output-local=dist .
 FROM golang:1.26 AS build
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN go mod tidy && gofmt -l . && go vet ./...
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o /out/cbzr-darwin-arm64 .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /out/cbzr-linux-amd64 .
+ENV CGO_ENABLED=0
+RUN LDFLAGS="-s -w -X main.version=$VERSION" && \
+    GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-darwin-arm64 . && \
+    GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-darwin-amd64 . && \
+    GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-linux-amd64 . && \
+    GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-linux-arm64 . && \
+    GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-windows-amd64.exe .
 
 FROM scratch
 COPY --from=build /out/ /
