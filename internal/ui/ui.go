@@ -1619,7 +1619,8 @@ func (m Model) statusView() string {
 	if m.status != "" {
 		left += "  ·  " + safeText(m.status)
 	}
-	right := "j/k page/scroll  v split  s spread  ? help  q clear+quit  Q save+quit "
+	// Keep the user's shortcut wording unchanged.
+	right := "j/k page e in-browser s split-view R rotate tab chapters  ? help  q quit "
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		return dim.Render(ansi.Truncate(left, m.width, "…"))

@@ -66,10 +66,16 @@ errors. Unused obfuscated fonts do not prevent reading. cbzr does not fetch
 EPUB resources over the network; external image/content references and remote
 stylesheet links produce errors. Internal DTDs and `xml:base` are unsupported.
 
-cbzr renders unshaped Latin, Greek and Cyrillic text when the bundled fonts
-contain its glyphs. It normalizes text to NFC and removes soft hyphens;
-missing glyphs, remaining combining marks and scripts that need shaping
-produce errors.
+cbzr keeps the bundled Go fonts for text and uses an installed fallback for
+missing glyphs: Apple Symbols on macOS, Segoe UI Symbol on Windows, or DejaVu
+Sans when available on Linux/BSD. Set `CBZR_EPUB_FALLBACK_FONT` to a TTF/OTF
+file (up to 32 MiB) to choose another fallback. Font data stays fixed for the
+process; restart cbzr after changing it. Switching fallback fonts can change
+page numbers.
+
+cbzr renders unshaped Latin, Greek and Cyrillic text, normalizes it to NFC,
+and removes soft hyphens. Glyphs absent from both fonts, remaining combining
+marks and scripts that need shaping still produce errors.
 
 EPUB limits: 10,000 archive files and generated pages; 1 MiB per metadata file;
 4 MiB per content document; 16 MiB of XML across opening; 128 XML nesting

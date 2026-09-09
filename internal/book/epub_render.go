@@ -75,11 +75,15 @@ func epubFaces() (font.Face, font.Face, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := opentype.NewFace(regular, &opentype.FaceOptions{Size: 32, DPI: 72, Hinting: font.HintingFull})
+	fallback, err := epubFallbackFont()
 	if err != nil {
 		return nil, nil, err
 	}
-	b, err := opentype.NewFace(bold, &opentype.FaceOptions{Size: 40, DPI: 72, Hinting: font.HintingFull})
+	r, err := newEPUBFace(regular, fallback, 32)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err := newEPUBFace(bold, fallback, 40)
 	if err != nil {
 		r.Close()
 		return nil, nil, err
@@ -151,13 +155,13 @@ func (l *epubLayout) text(text string, heading bool) error {
 		return nil
 	}
 	for _, word := range words {
-		// ponytail: bundled Go fonts cover unshaped text; add shaping and fonts before expanding scripts.
+		// ponytail: fonts alone do not shape text; add shaping before expanding scripts.
 		for _, r := range word {
 			if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Cf, r) || unicode.IsControl(r) || unicode.IsLetter(r) && !unicode.In(r, unicode.Latin, unicode.Greek, unicode.Cyrillic) {
 				return fmt.Errorf("EPUB text needs unsupported glyph or shaping: U+%04X", r)
 			}
 			if _, ok := face.GlyphAdvance(r); !ok {
-				return fmt.Errorf("EPUB bundled font lacks glyph U+%04X", r)
+				return fmt.Errorf("EPUB font lacks glyph U+%04X; set CBZR_EPUB_FALLBACK_FONT to a font containing it", r)
 			}
 		}
 		wordWidth := font.MeasureString(face, word)

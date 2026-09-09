@@ -19,6 +19,15 @@ import (
 	"cbzr/internal/server"
 )
 
+func TestStatusViewKeepsOriginalShortcutTips(t *testing.T) {
+	m := testModel()
+	m.width = 200
+	want := "j/k page e in-browser s split-view R rotate tab chapters  ? help  q quit "
+	if !strings.Contains(m.statusView(), want) {
+		t.Fatal("bottom shortcut tips changed")
+	}
+}
+
 func TestQuitSavePolicy(t *testing.T) {
 	plain, _ := (Model{}).updateRead(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if plain.(Model).SaveOnQuit() {
