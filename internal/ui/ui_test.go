@@ -22,7 +22,7 @@ import (
 func TestStatusViewKeepsOriginalShortcutTips(t *testing.T) {
 	m := testModel()
 	m.width = 200
-	want := "j/k page e in-browser s split-view R rotate tab chapters  ? help  q quit "
+	want := "j/k page e in-browser s spread R rotate tab chapters  ? help  q quit "
 	if !strings.Contains(m.statusView(), want) {
 		t.Fatal("bottom shortcut tips changed")
 	}
