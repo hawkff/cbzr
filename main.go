@@ -1,4 +1,4 @@
-// cbzr is a terminal comic reader for .cbz and .cbr.
+// cbzr is a terminal reader for .cbz, .cbr and .epub.
 //
 //	cbzr one.cbz            read one book
 //	cbzr one.cbz two.cbr    split screen, two books side by side
@@ -34,7 +34,7 @@ func main() {
 	backend := flag.String("renderer", "", "force renderer: kitty | halfblock (default: auto)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: cbzr [flags] [book.cbz [book2.cbz]]\n\n")
+		fmt.Fprintf(os.Stderr, "usage: cbzr [flags] [book [book2]]\nformats: .cbz/.zip, .cbr/.rar, .epub\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()

@@ -1,4 +1,4 @@
-// Package ui runs the terminal comic reader.
+// Package ui runs the terminal book reader.
 package ui
 
 import (
@@ -182,7 +182,7 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 	}
 
 	fp := filepicker.New()
-	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar"}
+	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar", ".epub"}
 	if wd, err := os.Getwd(); err == nil {
 		fp.CurrentDirectory = wd
 	}
@@ -1370,6 +1370,16 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	cols, rows := m.imgBox(i)
 	r := m.renderer
 	webtoon := m.webtoon
+	load := func(pg int) (image.Image, error) {
+		if r.Name() == "halfblock" && b.IsTextPage(pg) {
+			hint := "use e for browser or restart with -renderer=kitty in Kitty/Ghostty"
+			if m.nativeAvailable {
+				hint = "use e for browser, f for native, or -renderer=kitty in Kitty/Ghostty"
+			}
+			return nil, fmt.Errorf("EPUB text needs pixel rendering: %s", hint)
+		}
+		return b.Page(pg)
+	}
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
 		return func() tea.Msg {
@@ -1378,9 +1388,9 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			outPage, outOffset := pg, 0.0
 			if webtoon {
 				cw, ch := render.CellSize()
-				img, outPage, outOffset, err = render.ComposeWebtoon(b.Page, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch)
+				img, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch)
 			} else {
-				img, err = b.Page(pg)
+				img, err = load(pg)
 				if err == nil {
 					img = render.Transform(img, rot, zoom, cx, cy)
 				}
@@ -1429,7 +1439,7 @@ func (m Model) View() string {
 	}
 	switch m.mode {
 	case modePick:
-		head := titleActive.Render(fmt.Sprintf(" Open comic → pane %d ", m.pickFor+1))
+		head := titleActive.Render(fmt.Sprintf(" Open book → pane %d ", m.pickFor+1))
 		hint := dim.Render(" enter select · h/l dirs · esc cancel")
 		return head + "\n\n" + m.picker.View() + "\n" + hint
 	case modeHelp:
@@ -1550,7 +1560,7 @@ func (m Model) paneLines(i int) []string {
 
 	msg := ""
 	switch {
-	case p.err != nil:
+	case p.err != nil && (!m.spreadActive() || p.book == nil):
 		msg = errStyle.Render(ansi.Truncate(safeText(p.err.Error()), max(1, w-2), "…"))
 	case p.book == nil:
 		msg = dim.Render("no book")
@@ -1564,7 +1574,10 @@ func (m Model) paneLines(i int) []string {
 		wr := w - 1 - hw
 		left := imgLines(p.res, hw, body)
 		right := imgLines(p.res2, wr, body)
-		if left == nil {
+		if p.err != nil {
+			text := errStyle.Render(ansi.Truncate(safeText(p.err.Error()), hw, "…"))
+			left = centerCells([]string{text}, ansi.StringWidth(text), hw, body)
+		} else if left == nil {
 			left = centerCells([]string{dim.Render("loading…")}, 8, hw, body)
 		}
 		if p.err2 != nil {
@@ -1615,7 +1628,8 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	help := `cbzr: terminal comic reader (.cbz/.cbr)
+	help := `cbzr: terminal reader (.cbz/.cbr/.epub)
+EPUB text: Kitty/Ghostty graphics, browser, or native macOS.
 
   j / k          next / prev page or spread (webtoon: one viewport; 2j for two)
   J / K          next / prev page or spread (webtoon: half a viewport)
@@ -1626,7 +1640,7 @@ func (m Model) helpView() string {
   w              switch pane
   v              toggle split          (keeps the active pane)
   s              toggle two-page spread (single pane)
-  tab            chapter menu          (ComicInfo.xml or folders)
+  tab            chapter menu          (EPUB headings/titles, ComicInfo.xml or folders)
   b              toggle bookmark on this page
   F              bookmarks menu
   S              screenshot page → PNG (CBZR_SHOT_DIR or cwd)

@@ -22,9 +22,8 @@ type comicInfo struct {
 	} `xml:"Pages"`
 }
 
-// Chapters returns ComicInfo.xml bookmarks or top-level folder markers.
-// It returns nil, nil when neither exists, and reports metadata read or
-// parse errors without falling back to folders.
+// Chapters returns EPUB headings/document titles, ComicInfo.xml bookmarks,
+// or top-level archive folder markers. Metadata errors do not fall back to folders.
 func (b *Book) Chapters() ([]Chapter, error) {
 	b.chapOnce.Do(func() {
 		b.chaps, b.chapErr = b.comicInfoChapters()
