@@ -1,5 +1,7 @@
 package book
 
+import "strings"
+
 // NaturalLess compares strings so that "page2" sorts before "page10".
 // Case-insensitive; digit runs compare numerically.
 func NaturalLess(a, b string) bool {
@@ -16,7 +18,7 @@ func NaturalLess(a, b string) bool {
 			for j < len(b) && isDigit(b[j]) {
 				j++
 			}
-			na, nb := trimZeros(a[si:i]), trimZeros(b[sj:j])
+			na, nb := strings.TrimLeft(a[si:i], "0"), strings.TrimLeft(b[sj:j], "0")
 			if len(na) != len(nb) {
 				return len(na) < len(nb)
 			}
@@ -42,11 +44,4 @@ func lower(c byte) byte {
 		return c + 32
 	}
 	return c
-}
-
-func trimZeros(s string) string {
-	for len(s) > 1 && s[0] == '0' {
-		s = s[1:]
-	}
-	return s
 }

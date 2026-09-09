@@ -4,11 +4,14 @@ package bookmarks
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"cbzr/internal/storage"
 )
 
 // Mark is one saved position.
@@ -51,25 +54,27 @@ func Load() *Store {
 	return s
 }
 
-// Toggle adds a mark, or removes it when the same book+page already exists.
-// Returns true when a mark was added.
-func (s *Store) Toggle(book, title string, page int) bool {
-	for i, m := range s.Marks {
-		if m.Book == book && m.Page == page {
-			s.Marks = append(s.Marks[:i], s.Marks[i+1:]...)
-			s.save()
-			return false
+// Toggle adds a mark or removes the existing book/page mark.
+// It returns true after saving a new mark.
+func (s *Store) Toggle(book, title string, page int) (bool, error) {
+	added := false
+	err := s.update(func() {
+		for i, m := range s.Marks {
+			if m.Book == book && m.Page == page {
+				s.Marks = append(s.Marks[:i], s.Marks[i+1:]...)
+				return
+			}
 		}
-	}
-	s.Marks = append(s.Marks, Mark{Book: book, Title: title, Page: page, Added: time.Now()})
-	sort.SliceStable(s.Marks, func(i, j int) bool {
-		if s.Marks[i].Book != s.Marks[j].Book {
-			return s.Marks[i].Book < s.Marks[j].Book
-		}
-		return s.Marks[i].Page < s.Marks[j].Page
+		s.Marks = append(s.Marks, Mark{Book: book, Title: title, Page: page, Added: time.Now()})
+		sort.SliceStable(s.Marks, func(i, j int) bool {
+			if s.Marks[i].Book != s.Marks[j].Book {
+				return s.Marks[i].Book < s.Marks[j].Book
+			}
+			return s.Marks[i].Page < s.Marks[j].Page
+		})
+		added = true
 	})
-	s.save()
-	return true
+	return added && err == nil, err
 }
 
 // Has reports whether book+page is bookmarked.
@@ -82,44 +87,48 @@ func (s *Store) Has(book string, page int) bool {
 	return false
 }
 
-// Rename sets the custom label of book+page. Empty name reverts to the title.
-func (s *Store) Rename(book string, page int, name string) bool {
-	for i := range s.Marks {
-		if s.Marks[i].Book == book && s.Marks[i].Page == page {
-			s.Marks[i].Name = strings.TrimSpace(name)
-			s.save()
-			return true
+// Rename sets the custom label. An empty name restores the title.
+func (s *Store) Rename(book string, page int, name string) error {
+	return s.update(func() {
+		for i := range s.Marks {
+			if s.Marks[i].Book == book && s.Marks[i].Page == page {
+				s.Marks[i].Name = strings.TrimSpace(name)
+				return
+			}
 		}
-	}
-	return false
+	})
 }
 
-// Remove deletes the mark for book+page.
-func (s *Store) Remove(book string, page int) bool {
-	for i, m := range s.Marks {
-		if m.Book == book && m.Page == page {
-			s.Marks = append(s.Marks[:i], s.Marks[i+1:]...)
-			s.save()
-			return true
+// Remove deletes the mark for book/page.
+func (s *Store) Remove(book string, page int) error {
+	return s.update(func() {
+		for i, m := range s.Marks {
+			if m.Book == book && m.Page == page {
+				s.Marks = append(s.Marks[:i], s.Marks[i+1:]...)
+				return
+			}
 		}
-	}
-	return false
+	})
 }
 
-func (s *Store) save() {
+func (s *Store) update(change func()) error {
 	if s.path == "" {
-		return
+		return fmt.Errorf("bookmark configuration directory unavailable")
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	previous := s.Marks
+	err := storage.Update(s.path, func(data []byte) ([]byte, error) {
+		var latest Store
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &latest); err != nil {
+				return nil, err
+			}
+		}
+		s.Marks = latest.Marks
+		change()
+		return json.MarshalIndent(s, "", "  ")
+	})
 	if err != nil {
-		return
+		s.Marks = previous
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
-	}
-	os.Rename(tmp, s.path) //nolint:errcheck
+	return err
 }

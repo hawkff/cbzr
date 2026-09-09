@@ -1,0 +1,50 @@
+name: Go checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+        cgo: ["1"]
+        include:
+          - os: macos-15
+            cgo: "0"
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: ${{ matrix.cgo }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Race checks
+        if: matrix.cgo == '1'
+        run: go test -race ./...
+      - name: Build native macOS frontend
+        if: runner.os == 'macOS' && matrix.cgo == '1'
+        run: |
+          go build -o dist/cbzr-native .
+          clang -fobjc-arc -framework Cocoa internal/native/testdata/input.m -o "$RUNNER_TEMP/native-input-test"
+          "$RUNNER_TEMP/native-input-test"
+      - name: Compile declared BSD targets
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for target in freebsd netbsd openbsd dragonfly; do
+            CGO_ENABLED=0 GOOS="$target" GOARCH=amd64 go build ./...
+          done

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -18,6 +19,7 @@ import (
 // terminal's point of view, so they compose with bubbletea repaints and
 // side-by-side joins. Supported by kitty and ghostty; tmux via passthrough.
 type Kitty struct {
+	mu     sync.Mutex
 	cw, ch float64
 	tmux   bool
 }
@@ -35,21 +37,24 @@ func NewKitty() *Kitty {
 
 func (k *Kitty) Name() string { return "kitty" }
 
-func (k *Kitty) SetCellSize(cw, ch float64) { k.cw, k.ch = cw, ch }
+func (k *Kitty) SetCellSize(cw, ch float64) { k.mu.Lock(); k.cw, k.ch = cw, ch; k.mu.Unlock() }
 
 const chunkSize = 4096
 
 func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result, error) {
+	k.mu.Lock()
+	cw, ch := k.cw, k.ch
+	k.mu.Unlock()
 	maxCols = min(maxCols, len(diacritics))
 	maxRows = min(maxRows, len(diacritics))
 	b := img.Bounds()
-	cols, rows, _, _ := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, k.cw, k.ch)
+	cols, rows, _, _ := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, cw, ch)
 
 	// Scale to exactly the grid's pixel size. The terminal fits the bitmap
 	// to the placement grid anchored top-left; any aspect slack would show
 	// as an off-center image, so leave none.
-	pw := max(1, int(float64(cols)*k.cw+0.5))
-	ph := max(1, int(float64(rows)*k.ch+0.5))
+	pw := max(1, int(float64(cols)*cw+0.5))
+	ph := max(1, int(float64(rows)*ch+0.5))
 	dst := image.NewRGBA(image.Rect(0, 0, pw, ph))
 	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
 

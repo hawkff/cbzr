@@ -1,16 +1,17 @@
-// Package ui is the bubbletea model: two side-by-side reader panes with
-// vim keybindings, chapter/bookmark menus, OCR search, and a browser
-// hand-off.
+// Package ui runs the terminal comic reader.
 package ui
 
 import (
 	"fmt"
+	"image"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,7 +20,9 @@ import (
 
 	"cbzr/internal/book"
 	"cbzr/internal/bookmarks"
+	"cbzr/internal/native"
 	"cbzr/internal/ocr"
+	"cbzr/internal/progress"
 	"cbzr/internal/render"
 	"cbzr/internal/server"
 )
@@ -37,8 +40,9 @@ const (
 )
 
 const (
-	zoomStep = 1.25
-	zoomMax  = 8.0
+	zoomStep  = 1.25
+	zoomMax   = 8.0
+	targetFPS = 120
 )
 
 type pane struct {
@@ -47,12 +51,16 @@ type pane struct {
 	res     render.Result
 	res2    render.Result // right page in spread mode
 	err     error
+	err2    error
 	loading bool
 	gen     int
 
-	rot    int // quarter turns cw
-	zoom   float64
-	cx, cy float64 // view center (fractions of rotated image)
+	rot       int // quarter turns cw
+	zoom      float64
+	cx, cy    float64 // view center (fractions of rotated image)
+	webOffset float64 // vertical position in the current webtoon page
+	webScroll float64 // pending webtoon scroll in terminal rows
+	webStep   float64 // scroll included in the in-flight frame
 }
 
 func newPane() *pane { return &pane{zoom: 1, cx: 0.5, cy: 0.5} }
@@ -75,36 +83,44 @@ type Model struct {
 	renderer render.Renderer
 	srv      *server.Server
 	marks    *bookmarks.Store
+	progress *progress.Store
 
-	panes  [2]*pane
-	active int
-	split  bool
-	spread bool // two pages side by side in a single pane
+	panes   [2]*pane
+	active  int
+	split   bool
+	spread  bool // two pages side by side in a single pane
+	zen     bool // hide titles and the status bar; keep search input visible
+	webtoon bool // continuous, width-fit vertical reading
 
-	width, height int
-	mode          mode
-	picker        filepicker.Model
-	pickFor       int
-	count         string
-	status        string
-	openBrowser   func(string) error
+	width, height   int
+	mode            mode
+	picker          filepicker.Model
+	pickFor         int
+	count           string
+	status          string
+	openBrowser     func(string) error
+	nativeAvailable bool
 
 	menu    menu
 	input   string // search / filter / rename input buffer
 	find    search
 	ocrText map[string]string // "path\x00page" -> text
 
-	resizeGen int
+	resizeGen       int
+	saveOnQuit      bool
+	nativeRequested bool
 }
 
 type renderedMsg struct {
+	target                *pane
+	book                  *book.Book
 	pane, slot, gen, page int
 	cols, rows            int
+	offset                float64
+	scroll                float64
 	res                   render.Result
 	err                   error
 }
-
-type prefetchedMsg struct{}
 
 type shotMsg struct {
 	path string
@@ -113,35 +129,56 @@ type shotMsg struct {
 
 type ocrMsg struct {
 	gen, page int
+	book      *book.Book
 	text      string
 	err       error
 }
 
 type resizeSettledMsg struct{ gen int }
 
+type frameReadyMsg struct {
+	target          *pane
+	book            *book.Book
+	pane, slot, gen int
+	rerender        bool
+}
+
 // New builds the model, opening up to two books given on the command line.
-func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, openBrowser func(string) error, paths []string) Model {
+func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, positions *progress.Store, openBrowser func(string) error, nativeAvailable bool, paths []string) Model {
 	m := Model{
-		renderer:    r,
-		srv:         srv,
-		marks:       marks,
-		panes:       [2]*pane{newPane(), newPane()},
-		openBrowser: openBrowser,
-		ocrText:     map[string]string{},
+		renderer:        r,
+		srv:             srv,
+		marks:           marks,
+		progress:        positions,
+		panes:           [2]*pane{newPane(), newPane()},
+		openBrowser:     openBrowser,
+		nativeAvailable: nativeAvailable,
+		ocrText:         map[string]string{},
 	}
-	for i, p := range paths {
+	resumeWebtoon := false
+	for i, path := range paths {
 		if i > 1 {
 			break
 		}
-		b, err := book.Open(p)
+		b, err := book.Open(path)
 		if err != nil {
 			m.panes[i].err = err
 			continue
 		}
 		m.panes[i].book = b
+		if pos, ok := positions.Get(b.Path); ok {
+			m.panes[i].page = min(b.Len()-1, max(0, pos.Page))
+			m.panes[i].webOffset = clamp(pos.Offset, 0, 1)
+			m.panes[i].webScroll = pos.Scroll
+			if i == 0 {
+				resumeWebtoon = pos.Webtoon
+			}
+		}
 	}
 	if m.panes[1].book != nil {
 		m.split = true
+	} else {
+		m.webtoon = resumeWebtoon
 	}
 
 	fp := filepicker.New()
@@ -159,6 +196,80 @@ func (m Model) Books() []*book.Book {
 	return []*book.Book{m.panes[0].book, m.panes[1].book}
 }
 
+// NativeState holds the active pane's reading state for the native window.
+type NativeState = native.State
+
+// NativeRequested reports whether f requested the native macOS reader.
+func (m Model) NativeRequested() bool { return m.nativeRequested }
+
+// NativeState returns the active pane's current reading state.
+func (m Model) NativeState() NativeState {
+	p := m.panes[m.active]
+	state := NativeState{Page: p.page, Offset: p.webOffset, Scroll: p.webScroll, Webtoon: m.webtoon, Rotation: p.rot, Zoom: p.zoom, CenterX: p.cx, CenterY: p.cy, Spread: m.spread}
+	if p.book != nil {
+		state.Path = p.book.Path
+	}
+	return state
+}
+
+// ApplyNativeState updates the active pane after the native window returns.
+func (m Model) ApplyNativeState(state NativeState) Model {
+	p := m.panes[m.active]
+	p.page = state.Page
+	p.webOffset = state.Offset
+	p.webScroll = state.Scroll
+	p.rot = state.Rotation
+	p.zoom = state.Zoom
+	p.cx, p.cy = state.CenterX, state.CenterY
+	m.webtoon = state.Webtoon && !m.split
+	m.spread = state.Spread && !m.split && !m.webtoon
+	m.nativeRequested = false
+	return m
+}
+
+// SaveNativeProgress saves both panes with the native position for the active book.
+func (m Model) SaveNativeProgress(state NativeState) error {
+	for i := range m.panes {
+		m.rememberPane(i)
+	}
+	m.progress.Set(state.Path, progress.Position{Page: state.Page, Offset: state.Offset, Scroll: state.Scroll, Webtoon: state.Webtoon})
+	return m.progress.Save()
+}
+
+// ClearProgress removes saved positions for every open book.
+func (m Model) ClearProgress() error {
+	for _, p := range m.panes {
+		if p.book != nil {
+			m.progress.Delete(p.book.Path)
+		}
+	}
+	return m.progress.Save()
+}
+
+// SaveOnQuit reports whether the user requested a saved exit with Q.
+func (m Model) SaveOnQuit() bool { return m.saveOnQuit }
+
+// SaveProgress writes each open book's current position.
+func (m Model) SaveProgress() error {
+	for i := range m.panes {
+		m.rememberPane(i)
+	}
+	return m.progress.Save()
+}
+
+func (m Model) rememberPane(i int) {
+	p := m.panes[i]
+	if p.book == nil {
+		return
+	}
+	m.progress.Set(p.book.Path, progress.Position{
+		Page:    p.page,
+		Offset:  p.webOffset,
+		Scroll:  p.webScroll,
+		Webtoon: m.webtoon,
+	})
+}
+
 func (m Model) Init() tea.Cmd {
 	return tea.SetWindowTitle("cbzr")
 }
@@ -172,9 +283,12 @@ func (m Model) paneCount() int {
 	return 1
 }
 
-// paneBox returns the outer size of pane i (excluding the status bar).
+// paneBox returns the outer size of pane i.
 func (m Model) paneBox(i int) (w, h int) {
 	h = max(1, m.height-1)
+	if m.zen && m.mode != modeSearch {
+		h = max(1, m.height)
+	}
 	if !m.split {
 		return max(1, m.width), h
 	}
@@ -193,6 +307,9 @@ func (m Model) imgBox(i int) (cols, rows int) {
 	w, h := m.paneBox(i)
 	if m.spreadActive() {
 		w = (w - 1) / 2
+	}
+	if m.zen {
+		return max(1, w), max(1, h)
 	}
 	return max(1, w-2), max(1, h-2)
 }
@@ -223,34 +340,63 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case renderedMsg:
 		p := m.panes[msg.pane]
-		if msg.gen != p.gen {
+		if msg.gen != p.gen || msg.target != p || msg.book != p.book {
 			return m, nil // stale
 		}
 		if msg.slot == 1 {
+			p.res2 = render.Result{}
+			p.err2 = msg.err
 			if msg.err == nil {
 				p.res2 = msg.res
+				return m, frameReadyAfterPaint(p, msg.pane, msg.slot, msg.gen, false)
 			}
 			return m, nil
 		}
-		p.loading = false
 		p.err = msg.err
-		if msg.err == nil {
-			// Transmit bytes are emitted inside View so that bubbletea's
-			// renderer stays the only writer to the terminal.
-			p.res = msg.res
+		if msg.err != nil {
+			p.loading = false
+			return m, nil
 		}
-		// The box changed while this render was in flight (e.g. a resize
-		// storm): render once more for the current geometry.
+		stalled := m.webtoon && msg.scroll != 0 && p.page == msg.page && math.Abs(p.webOffset-msg.offset) < 1e-9
+		p.page = msg.page
+		p.webOffset = msg.offset
+		p.webScroll -= msg.scroll
+		p.webStep = 0
+		if stalled && p.webScroll*msg.scroll > 0 {
+			p.webScroll = 0
+		}
+		if math.Abs(p.webScroll) < 0.001 {
+			p.webScroll = 0
+		}
+		// Transmit bytes are emitted inside View so that bubbletea's
+		// renderer stays the only writer to the terminal.
+		p.res = msg.res
+		rerender := false
 		if cols, rows := m.imgBox(msg.pane); cols != msg.cols || rows != msg.rows {
-			return m, m.renderPane(msg.pane)
+			rerender = true
 		}
+		if m.webtoon && p.webScroll != 0 {
+			rerender = true
+		}
+		ready := frameReadyAfterPaint(p, msg.pane, msg.slot, msg.gen, rerender)
 		step := 1
 		if m.spreadActive() {
 			step = 2
 		}
-		return m, m.prefetch(msg.pane, msg.page+step)
+		return m, tea.Batch(ready, m.prefetch(msg.pane, msg.page+step))
 
-	case prefetchedMsg:
+	case frameReadyMsg:
+		p := m.panes[msg.pane]
+		if msg.gen != p.gen || msg.target != p || msg.book != p.book {
+			return m, nil
+		}
+		if msg.slot == 1 {
+			return m, nil
+		}
+		p.loading = false
+		if msg.rerender || m.webtoon && p.webScroll != 0 {
+			return m, m.renderPane(msg.pane)
+		}
 		return m, nil
 
 	case shotMsg:
@@ -319,8 +465,14 @@ func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Button {
 	case tea.MouseButtonWheelDown:
+		if m.webtoon {
+			return m.scrollWebtoon(target, 1)
+		}
 		return m.turn(target, 1)
 	case tea.MouseButtonWheelUp:
+		if m.webtoon {
+			return m.scrollWebtoon(target, -1)
+		}
 		return m.turn(target, -1)
 	case tea.MouseButtonLeft:
 		if m.split {
@@ -342,22 +494,35 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "Q":
+		m.saveOnQuit = true
+		return m, tea.Quit
 
 	case "?":
 		m.mode = modeHelp
 		return m, nil
 
-	// -- pages: j/k only --
+	// -- pages / webtoon viewport scrolling --
 	case "j":
 		return m.turn(m.active, m.takeCount())
 	case "k":
 		return m.turn(m.active, -m.takeCount())
+	case "J":
+		return m.turnHalf(m.active, m.takeCount())
+	case "K":
+		return m.turnHalf(m.active, -m.takeCount())
 	case "g":
 		return m.goTo(m.active, m.takeCountOr(1)-1)
 	case "G":
 		p := m.panes[m.active]
 		if p.book == nil {
 			return m, nil
+		}
+		if m.webtoon && m.count == "" {
+			p.page = p.book.Len() - 1
+			p.webOffset = 1
+			p.webScroll = 0
+			return m, m.renderPane(m.active)
 		}
 		return m.goTo(m.active, m.takeCountOr(p.book.Len())-1)
 
@@ -368,8 +533,16 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "v":
+		if m.webtoon {
+			m.status = "split is unavailable in webtoon mode (t to leave)"
+			return m, nil
+		}
 		return m.toggleSplit()
 	case "s":
+		if m.webtoon {
+			m.status = "spread is unavailable in webtoon mode (t to leave)"
+			return m, nil
+		}
 		if m.split {
 			m.status = "spread needs a single pane (v to unsplit)"
 			return m, nil
@@ -378,6 +551,36 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.rerenderAll()
 	case "x":
 		return m.closePane(m.active)
+	case "z":
+		m.zen = !m.zen
+		return m, m.rerenderAll()
+	case "f":
+		if !m.nativeAvailable {
+			m.status = "native reader is unavailable in this build"
+			return m, nil
+		}
+		if m.panes[m.active].book == nil {
+			m.status = "no book in this pane"
+			return m, nil
+		}
+		m.cancelSearch()
+		for _, p := range m.panes {
+			p.gen++
+			p.loading = false
+		}
+		m.nativeRequested = true
+		return m, tea.Quit
+	case "t":
+		if m.split {
+			m.status = "webtoon mode needs a single pane (v to unsplit)"
+			return m, nil
+		}
+		m.webtoon = !m.webtoon
+		m.spread = false
+		p := m.panes[m.active]
+		p.webScroll = 0
+		p.resetView()
+		return m, m.rerenderAll()
 
 	// -- menus --
 	case "tab":
@@ -391,7 +594,13 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.book == nil {
 			return m, nil
 		}
-		if m.marks.Toggle(p.book.Path, p.book.Title, p.page) {
+		added, err := m.marks.Toggle(p.book.Path, p.book.Title, p.page)
+		if err != nil {
+			m.zen = false
+			m.status = "bookmark failed: " + err.Error()
+			return m, m.rerenderAll()
+		}
+		if added {
 			m.status = fmt.Sprintf("bookmarked %s p.%d", p.book.Title, p.page+1)
 		} else {
 			m.status = fmt.Sprintf("removed bookmark %s p.%d", p.book.Title, p.page+1)
@@ -407,8 +616,16 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.rot = (p.rot + 1) & 3
 		return m, m.renderPane(m.active)
 	case "+", "=":
+		if m.webtoon {
+			m.status = "webtoon mode fits pages to the viewport width"
+			return m, nil
+		}
 		return m.zoomBy(zoomStep)
 	case "-":
+		if m.webtoon {
+			m.status = "webtoon mode fits pages to the viewport width"
+			return m, nil
+		}
 		return m.zoomBy(1 / zoomStep)
 	case "0":
 		p := m.panes[m.active]
@@ -432,7 +649,7 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeSearch
 		m.input = ""
-		return m, nil
+		return m, m.rerenderAll()
 	case "n":
 		return m.gotoHit(1)
 	case "p":
@@ -446,12 +663,19 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pickFor = m.active
 		return m, m.picker.Init()
 	case "O":
+		if m.webtoon {
+			m.status = "split is unavailable in webtoon mode (t to leave)"
+			return m, nil
+		}
+		var layout tea.Cmd
 		if !m.split {
+			m.cancelSearch()
 			m.split = true
+			layout = m.rerenderAll()
 		}
 		m.mode = modePick
 		m.pickFor = 1
-		return m, m.picker.Init()
+		return m, tea.Batch(layout, m.picker.Init())
 	case "e":
 		return m.browse()
 	case "r":
@@ -527,7 +751,12 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		m.marks.Remove(it.path, it.page)
+		if err := m.marks.Remove(it.path, it.page); err != nil {
+			m.zen = false
+			m.status = "bookmark failed: " + err.Error()
+			m.mode = modeRead
+			return m, m.rerenderAll()
+		}
 		m.reloadBookmarkMenu()
 		return m, nil
 	case "enter", "l":
@@ -586,7 +815,12 @@ func (m Model) updateMenuRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if it, ok := m.menu.selected(); ok {
-			m.marks.Rename(it.path, it.page, m.input)
+			if err := m.marks.Rename(it.path, it.page, m.input); err != nil {
+				m.zen = false
+				m.status = "bookmark failed: " + err.Error()
+				m.mode = modeRead
+				return m, m.rerenderAll()
+			}
 			m.reloadBookmarkMenu()
 		}
 		m.mode = modeMenu
@@ -623,14 +857,15 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.mode = modeRead
-		return m, nil
+		return m, m.rerenderAll()
 	case "enter":
 		m.mode = modeRead
 		term := strings.TrimSpace(m.input)
 		if term == "" {
-			return m, nil
+			return m, m.rerenderAll()
 		}
-		return m.startSearch(term)
+		updated, cmd := m.startSearch(term)
+		return updated, tea.Batch(cmd, m.rerenderAll())
 	case "backspace":
 		if len(m.input) > 0 {
 			m.input = m.input[:len(m.input)-1]
@@ -667,11 +902,42 @@ func (m Model) turn(i, delta int) (tea.Model, tea.Cmd) {
 	if p.book == nil {
 		return m, nil
 	}
+	if m.webtoon {
+		_, rows := m.imgBox(i)
+		return m.scrollWebtoon(i, float64(delta)*webtoonScrollDistance(rows, 1))
+	}
 	step := 1
 	if m.spreadActive() {
 		step = 2 // one keypress flips a whole spread
 	}
 	return m.goTo(i, p.page+delta*step)
+}
+
+func (m Model) turnHalf(i, delta int) (tea.Model, tea.Cmd) {
+	if !m.webtoon {
+		return m.turn(i, delta)
+	}
+	_, rows := m.imgBox(i)
+	return m.scrollWebtoon(i, float64(delta)*webtoonScrollDistance(rows, 0.5))
+}
+
+func (m Model) scrollWebtoon(i int, rows float64) (tea.Model, tea.Cmd) {
+	p := m.panes[i]
+	if p.book == nil {
+		return m, nil
+	}
+	inFlight := 0.0
+	if p.loading {
+		inFlight = p.webStep
+	}
+	if (p.webScroll-inFlight)*rows < 0 {
+		p.webScroll = inFlight
+	}
+	p.webScroll += rows
+	if p.loading {
+		return m, nil
+	}
+	return m, m.renderPane(i)
 }
 
 func (m Model) goTo(i, page int) (tea.Model, tea.Cmd) {
@@ -680,10 +946,12 @@ func (m Model) goTo(i, page int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	page = max(0, min(p.book.Len()-1, page))
-	if page == p.page && p.res.Rows > 0 {
+	if page == p.page && p.res.Rows > 0 && (!m.webtoon || p.webOffset == 0 && p.webScroll == 0) {
 		return m, nil
 	}
 	p.page = page
+	p.webOffset = 0
+	p.webScroll = 0
 	p.resetView()
 	return m, m.renderPane(i)
 }
@@ -724,6 +992,17 @@ func (m Model) pan(key string) (tea.Model, tea.Cmd) {
 
 func clamp(v, lo, hi float64) float64 { return min(hi, max(lo, v)) }
 
+func webtoonScrollDistance(viewportRows int, fraction float64) float64 {
+	return max(1, float64(viewportRows)*fraction)
+}
+
+func smoothWebtoonScroll(pending float64) float64 {
+	if math.Abs(pending) < 0.02 {
+		return pending
+	}
+	return clamp(pending*0.3, -3, 3)
+}
+
 func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 	b, err := book.Open(path)
 	p := m.panes[i]
@@ -731,16 +1010,29 @@ func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 		p.err = err
 		return m, prev
 	}
+	m.cancelSearch()
 	if p.book != nil {
 		p.book.Close() //nolint:errcheck
 	}
 	*p = *newPane()
 	p.book = b
+	if pos, ok := m.progress.Get(b.Path); ok {
+		p.page = min(b.Len()-1, max(0, pos.Page))
+		p.webOffset = clamp(pos.Offset, 0, 1)
+		p.webScroll = pos.Scroll
+		if !m.split {
+			m.webtoon = pos.Webtoon
+			if m.webtoon {
+				m.spread = false
+			}
+		}
+	}
 	m.syncServer()
 	return m, tea.Batch(prev, m.renderPane(i))
 }
 
 func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
+	m.cancelSearch()
 	if m.split {
 		// keep the active pane's book in pane 0.
 		if m.active == 1 {
@@ -766,6 +1058,7 @@ func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) closePane(i int) (tea.Model, tea.Cmd) {
+	m.cancelSearch()
 	m.closeBook(i)
 	m.panes[i] = newPane()
 	if m.split {
@@ -820,7 +1113,12 @@ func (m Model) openChapters() (tea.Model, tea.Cmd) {
 	if p.book == nil {
 		return m, nil
 	}
-	chs := p.book.Chapters()
+	chs, err := p.book.Chapters()
+	if err != nil {
+		m.zen = false
+		m.status = "chapters: " + err.Error()
+		return m, m.rerenderAll()
+	}
 	if len(chs) == 0 {
 		m.status = "no chapter info in this book"
 		return m, nil
@@ -829,14 +1127,14 @@ func (m Model) openChapters() (tea.Model, tea.Cmd) {
 	cursor := 0
 	for i, c := range chs {
 		items[i] = menuItem{
-			label: fmt.Sprintf("%-40s p.%d", ansi.Truncate(c.Title, 40, "…"), c.Page+1),
+			label: fmt.Sprintf("%-40s p.%d", ansi.Truncate(safeText(c.Title), 40, "…"), c.Page+1),
 			page:  c.Page,
 		}
 		if c.Page <= p.page {
 			cursor = i
 		}
 	}
-	m.menu = menu{kind: menuChapters, title: "Chapters — " + p.book.Title, all: items, cursor: cursor}
+	m.menu = menu{kind: menuChapters, title: "Chapters — " + safeText(p.book.Title), all: items, cursor: cursor}
 	m.menu.applyFilter()
 	m.menu.move(0, m.menuHeight())
 	m.mode = modeMenu
@@ -848,7 +1146,7 @@ func (m Model) buildBookmarkMenu() menu {
 	for _, mk := range m.marks.Marks {
 		items = append(items, menuItem{
 			label: fmt.Sprintf("%-36s p.%-5d %s",
-				ansi.Truncate(mk.Label(), 36, "…"), mk.Page+1, mk.Added.Format("2006-01-02")),
+				ansi.Truncate(safeText(mk.Label()), 36, "…"), mk.Page+1, mk.Added.Format("2006-01-02")),
 			page: mk.Page,
 			path: mk.Book,
 		})
@@ -910,6 +1208,8 @@ func sanitize(s string) string {
 
 // ---- OCR search -----------------------------------------------------------------
 
+func (m *Model) cancelSearch() { m.find = search{gen: m.find.gen + 1} }
+
 func (m Model) startSearch(term string) (tea.Model, tea.Cmd) {
 	p := m.panes[m.active]
 	if p.book == nil {
@@ -936,15 +1236,15 @@ func (m Model) ocrPage(gen, page int) tea.Cmd {
 	b := p.book
 	key := b.Path + "\x00" + strconv.Itoa(page)
 	if text, ok := m.ocrText[key]; ok {
-		return func() tea.Msg { return ocrMsg{gen: gen, page: page, text: text} }
+		return func() tea.Msg { return ocrMsg{gen: gen, page: page, book: b, text: text} }
 	}
 	return func() tea.Msg {
 		img, err := b.Page(page)
 		if err != nil {
-			return ocrMsg{gen: gen, page: page, err: err}
+			return ocrMsg{gen: gen, page: page, book: b, err: err}
 		}
 		text, err := ocr.Text(img)
-		return ocrMsg{gen: gen, page: page, text: text, err: err}
+		return ocrMsg{gen: gen, page: page, book: b, text: text, err: err}
 	}
 }
 
@@ -953,7 +1253,7 @@ func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p := m.panes[m.find.pane]
-	if p.book == nil {
+	if p.book == nil || p.book != msg.book {
 		m.find.running = false
 		return m, nil
 	}
@@ -1023,13 +1323,29 @@ func (m Model) gotoHit(dir int) (tea.Model, tea.Cmd) {
 
 // ---- rendering commands ------------------------------------------------------
 
+func frameReadyAfterPaint(target *pane, pane, slot, gen int, rerender bool) tea.Cmd {
+	// Pace animation without assuming the terminal has painted the frame.
+	book := target.book
+	return tea.Tick(time.Second/targetFPS, func(time.Time) tea.Msg {
+		return frameReadyMsg{target: target, book: book, pane: pane, slot: slot, gen: gen, rerender: rerender}
+	})
+}
+
+func renderImageID(pane, slot, gen int) uint32 {
+	id := uint32(pane + 1)
+	if slot == 1 {
+		id = 3
+	}
+	if gen%2 == 0 {
+		id += 3
+	}
+	return id
+}
+
 func (m *Model) rerenderAll() tea.Cmd {
 	var cmds []tea.Cmd
 	for i := 0; i < m.paneCount(); i++ {
-		// Drop stale results so old placeholder grids never linger and new
-		// transmit bytes always differ from the previous frame.
-		m.panes[i].res = render.Result{}
-		m.panes[i].res2 = render.Result{}
+		// Keep the previous frame visible until its replacement is ready.
 		if c := m.renderPane(i); c != nil {
 			cmds = append(cmds, c)
 		}
@@ -1046,24 +1362,42 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	p.loading = true
 	gen, page, b := p.gen, p.page, p.book
 	rot, zoom, cx, cy := p.rot, p.zoom, p.cx, p.cy
+	offset, scroll := p.webOffset, p.webScroll
+	if m.webtoon {
+		scroll = smoothWebtoonScroll(scroll)
+	}
+	p.webStep = scroll
 	cols, rows := m.imgBox(i)
 	r := m.renderer
-	mk := func(slot, pg int, id uint32) tea.Cmd {
+	webtoon := m.webtoon
+	mk := func(slot, pg int) tea.Cmd {
+		id := renderImageID(i, slot, gen)
 		return func() tea.Msg {
-			img, err := b.Page(pg)
-			if err != nil {
-				return renderedMsg{pane: i, slot: slot, gen: gen, page: page, cols: cols, rows: rows, err: err}
+			var img image.Image
+			var err error
+			outPage, outOffset := pg, 0.0
+			if webtoon {
+				cw, ch := render.CellSize()
+				img, outPage, outOffset, err = render.ComposeWebtoon(b.Page, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch)
+			} else {
+				img, err = b.Page(pg)
+				if err == nil {
+					img = render.Transform(img, rot, zoom, cx, cy)
+				}
 			}
-			img = render.Transform(img, rot, zoom, cx, cy)
+			if err != nil {
+				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, err: err}
+			}
 			res, err := r.Render(img, id, cols, rows)
-			return renderedMsg{pane: i, slot: slot, gen: gen, page: page, cols: cols, rows: rows, res: res, err: err}
+			return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, res: res, err: err}
 		}
 	}
-	p.res2 = render.Result{}
-	cmds := []tea.Cmd{mk(0, page, uint32(i+1))}
+	cmds := []tea.Cmd{mk(0, page)}
 	if m.spreadActive() && page+1 < b.Len() {
-		// Image id 3 is reserved for the spread's right page.
-		cmds = append(cmds, mk(1, page+1, 3))
+		cmds = append(cmds, mk(1, page+1))
+	} else {
+		p.res2 = render.Result{}
+		p.err2 = nil
 	}
 	return tea.Batch(cmds...)
 }
@@ -1076,7 +1410,7 @@ func (m Model) prefetch(i, page int) tea.Cmd {
 	b := p.book
 	return func() tea.Msg {
 		b.Page(page) //nolint:errcheck // warm the decode cache
-		return prefetchedMsg{}
+		return nil
 	}
 }
 
@@ -1103,10 +1437,10 @@ func (m Model) View() string {
 	case modeMenu:
 		return m.menu.view(m.width, m.height, "")
 	case modeMenuFilter:
-		footer := titleActive.Render(" /"+m.menu.filter+"▏") + dim.Render("  fuzzy filter · enter keep · esc clear")
+		footer := titleActive.Render(" /"+safeText(m.menu.filter)+"▏") + dim.Render("  fuzzy filter · enter keep · esc clear")
 		return m.menu.view(m.width, m.height, footer)
 	case modeMenuRename:
-		footer := titleActive.Render(" rename: "+m.input+"▏") + dim.Render("  enter save · empty reverts to title · esc cancel")
+		footer := titleActive.Render(" rename: "+safeText(m.input)+"▏") + dim.Render("  enter save · empty reverts to title · esc cancel")
 		return m.menu.view(m.width, m.height, footer)
 	}
 
@@ -1131,6 +1465,9 @@ func (m Model) View() string {
 	for i := 0; i < m.paneCount(); i++ {
 		oob.Write(m.panes[i].res.Transmit)
 		oob.Write(m.panes[i].res2.Transmit)
+	}
+	if m.zen && m.mode != modeSearch {
+		return oob.String() + body
 	}
 	return oob.String() + body + "\n" + m.statusView()
 }
@@ -1181,7 +1518,7 @@ func (m Model) paneLines(i int) []string {
 		if m.spreadActive() && p.page+1 < p.book.Len() {
 			pages = fmt.Sprintf("%d-%d/%d", p.page+1, p.page+2, p.book.Len())
 		}
-		title = fmt.Sprintf("%s  %s", p.book.Title, pages)
+		title = fmt.Sprintf("%s  %s", safeText(p.book.Title), pages)
 		if m.marks.Has(p.book.Path, p.page) {
 			title = "🔖 " + title
 		}
@@ -1205,13 +1542,16 @@ func (m Model) paneLines(i int) []string {
 	}
 
 	lines := make([]string, 0, h)
-	lines = append(lines, centerText(ts.Render(ansi.Truncate(title, w, "…")), w))
-	body := h - 1
+	body := h
+	if !m.zen {
+		lines = append(lines, centerText(ts.Render(ansi.Truncate(title, w, "…")), w))
+		body--
+	}
 
 	msg := ""
 	switch {
 	case p.err != nil:
-		msg = errStyle.Render(ansi.Truncate(p.err.Error(), max(1, w-2), "…"))
+		msg = errStyle.Render(ansi.Truncate(safeText(p.err.Error()), max(1, w-2), "…"))
 	case p.book == nil:
 		msg = dim.Render("no book")
 	}
@@ -1227,7 +1567,10 @@ func (m Model) paneLines(i int) []string {
 		if left == nil {
 			left = centerCells([]string{dim.Render("loading…")}, 8, hw, body)
 		}
-		if right == nil {
+		if p.err2 != nil {
+			text := errStyle.Render(ansi.Truncate(safeText(p.err2.Error()), wr, "…"))
+			right = centerCells([]string{text}, ansi.StringWidth(text), wr, body)
+		} else if right == nil {
 			right = centerCells([]string{""}, 0, wr, body)
 		}
 		for r := 0; r < body; r++ {
@@ -1245,9 +1588,12 @@ func (m Model) paneLines(i int) []string {
 
 func (m Model) statusView() string {
 	if m.mode == modeSearch {
-		return titleActive.Render(" /" + m.input + "▏") + dim.Render("  OCR search · enter run · esc cancel")
+		return titleActive.Render(" /"+safeText(m.input)+"▏") + dim.Render("  OCR search · enter run · esc cancel")
 	}
 	left := " " + m.renderer.Name()
+	if m.webtoon {
+		left += "  ·  webtoon"
+	}
 	if m.count != "" {
 		left += "  ·  " + m.count
 	}
@@ -1258,9 +1604,9 @@ func (m Model) statusView() string {
 		left += fmt.Sprintf("  ·  :%d", port)
 	}
 	if m.status != "" {
-		left += "  ·  " + m.status
+		left += "  ·  " + safeText(m.status)
 	}
-	right := "j/k pages  v split  w pane  tab chapters  / find  ? help  q quit "
+	right := "j/k page/scroll  v split  s spread  ? help  q clear+quit  Q save+quit "
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		return dim.Render(ansi.Truncate(left, m.width, "…"))
@@ -1269,10 +1615,14 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	help := `cbzr — terminal comic reader (.cbz/.cbr)
+	help := `cbzr: terminal comic reader (.cbz/.cbr)
 
-  j / k          next / prev page      (counts work: 5j)
+  j / k          next / prev page or spread (webtoon: one viewport; 2j for two)
+  J / K          next / prev page or spread (webtoon: half a viewport)
   g / G          first / last page     (42G → page 42)
+  f              open active book in native macOS fullscreen (f returns)
+  z              toggle terminal focus mode (hide titles and status bar)
+  t              toggle continuous webtoon mode (single pane)
   w              switch pane
   v              toggle split          (keeps the active pane)
   s              toggle two-page spread (single pane)
@@ -1287,10 +1637,11 @@ func (m Model) helpView() string {
   /              OCR search (tesseract) · n / p next / prev hit
   o / O          open file in pane / in split
   x              close pane
-  e              open current book in browser (localhost:5xxxx)
+  e              open current book in browser (127.0.0.1:5xxxx)
   r              re-render
   ?              this help · any key to close
-  q              quit`
+  q / ctrl+c     clear saved positions and quit
+  Q              save reading positions and quit`
 	// lipgloss.Place aligns every line separately; pad the block to one
 	// width first so the columns stay put.
 	lines := strings.Split(help, "\n")
@@ -1303,4 +1654,14 @@ func (m Model) helpView() string {
 	}
 	block := strings.Join(lines, "\n")
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, block)
+}
+
+// safeText removes terminal controls from labels before styling.
+func safeText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, ansi.Strip(s))
 }
