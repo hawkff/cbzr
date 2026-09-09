@@ -257,7 +257,16 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	first, firstChapter := len(l.book.pages), len(l.book.chaps)
 	var text strings.Builder
 	heading := false
-	flush := func() error { s := text.String(); text.Reset(); return l.text(s, heading) }
+	pendingChapter := -1
+	flush := func() error {
+		s := text.String()
+		text.Reset()
+		if heading && pendingChapter >= 0 && strings.TrimSpace(strings.ReplaceAll(s, "\u00ad", "")) != "" {
+			l.book.chaps[pendingChapter].Page = len(l.book.pages)
+			pendingChapter = -1
+		}
+		return l.text(s, heading)
+	}
 	var walk func(*epubNode) error
 	walk = func(n *epubNode) error {
 		if n.name.Local == "" {
@@ -285,6 +294,7 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 				return err
 			}
 			if title := n.allText(); title != "" {
+				pendingChapter = len(l.book.chaps)
 				l.book.chaps = append(l.book.chaps, Chapter{Title: title, Page: len(l.book.pages)})
 			}
 		}
@@ -314,6 +324,9 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			if err := flush(); err != nil {
 				return err
 			}
+		}
+		if isHeading {
+			pendingChapter = -1
 		}
 		heading = oldHeading
 		return nil

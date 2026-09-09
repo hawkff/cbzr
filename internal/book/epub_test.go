@@ -457,6 +457,50 @@ func TestEPUBLazyImagesAndDimensions(t *testing.T) {
 	}
 }
 
+func TestEPUBHeadingTargetsFirstTextPage(t *testing.T) {
+	img := `<img src="../images/panel"/>`
+	svg := `<svg xmlns="http://www.w3.org/2000/svg"><image href="../images/panel"/></svg>`
+	for _, tc := range []struct {
+		name, heading string
+		page          int
+	}{
+		{"image first", img + "First heading", 1},
+		{"SVG first", svg + "First heading", 1},
+		{"text first", "First heading" + img + " continued", 0},
+		{"soft hyphen first", "\u00ad" + img + "First heading", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := epubFixture()
+			replaceEPUB(entries, "OPS/book.opf", "</manifest>", `<item id="panel" href="images/panel" media-type="image/png"/></manifest>`)
+			replaceEPUB(entries, "OPS/text/z.xhtml", `<h1>First heading</h1>`, "<h1>"+tc.heading+"</h1>"+img)
+			replaceEPUB(entries, "OPS/text/z.xhtml", "</body>", "<h2>Next heading</h2></body>")
+			entries = append(entries, testEntry{"OPS/images/panel", epubImage(t)})
+			b, err := Open(writeEPUB(t, entries, ".epub"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			chapters, err := b.Chapters()
+			if err != nil || len(chapters) != 3 {
+				t.Fatalf("chapters: %#v, %v", chapters, err)
+			}
+			if chapters[0].Page != tc.page || !strings.HasPrefix(textEPUBPage(t, b, chapters[0].Page), "First heading") {
+				t.Fatalf("first heading target: %#v", chapters[0])
+			}
+			if chapters[1] != (Chapter{"Next heading", b.Len() - 2}) || chapters[2] != (Chapter{"Notes", b.Len() - 1}) {
+				t.Fatalf("chapter target leaked: %#v", chapters)
+			}
+			imagePage := 0
+			if tc.page == 0 {
+				imagePage = 1
+			}
+			if b.pages[imagePage].Name() != "OPS/images/panel" {
+				t.Fatal("heading image order changed")
+			}
+		})
+	}
+}
+
 func TestEPUBLinkLabelsAndLatinNormalization(t *testing.T) {
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/text/z.xhtml", "<body>", "<body><p><a href=\"https://publisher.example/legal\">Publisher</a> co\u00adoperate Cafe\u0301</p>")
