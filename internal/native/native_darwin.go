@@ -43,6 +43,7 @@ const (
 	eventPanDown
 	eventPanLeft
 	eventPanRight
+	eventToggleInversion
 )
 
 type scaledPageKey struct {
@@ -112,6 +113,9 @@ func (r *reader) frame(width, height int) *image.RGBA {
 	var err error
 	if r.state.Webtoon {
 		img, err = r.webtoonFrame(width, height)
+		if err == nil && r.state.Inverted {
+			img = render.Invert(img)
+		}
 	} else {
 		img, err = r.pageFrame(width, height)
 	}
@@ -151,6 +155,9 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 		return nil, err
 	}
 	left = render.Transform(left, r.state.Rotation, r.state.Zoom, r.state.CenterX, r.state.CenterY)
+	if r.state.Inverted {
+		left = render.Invert(left)
+	}
 	if !r.state.Spread || r.state.Page+1 >= r.book.Len() {
 		return fit(left, width, height), nil
 	}
@@ -159,6 +166,9 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 		return nil, err
 	}
 	right = render.Transform(right, r.state.Rotation, r.state.Zoom, r.state.CenterX, r.state.CenterY)
+	if r.state.Inverted {
+		right = render.Invert(right)
+	}
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.Black, image.Point{}, draw.Src)
 	gap := min(8, max(2, width/300))
@@ -291,6 +301,8 @@ func cbzr_go_native_event(handle C.uintptr_t, event C.int) {
 		r.action = ActionSave
 	case eventReturn:
 		r.action = ActionReturn
+	case eventToggleInversion:
+		r.state.Inverted = !r.state.Inverted
 	case eventToggleWebtoon:
 		r.pendingScroll, r.state.Scroll = 0, 0
 		r.state.Webtoon = !r.state.Webtoon

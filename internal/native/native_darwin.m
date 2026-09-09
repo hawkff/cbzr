@@ -28,6 +28,7 @@ static const int CBZREventPanUp = 12;
 static const int CBZREventPanDown = 13;
 static const int CBZREventPanLeft = 14;
 static const int CBZREventPanRight = 15;
+static const int CBZREventToggleInversion = 16;
 
 static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     free((void *)data);
@@ -154,6 +155,9 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
             return;
         case 's':
             cbzr_go_native_event(self.handle, CBZREventToggleSpread);
+            break;
+        case 'i':
+            cbzr_go_native_event(self.handle, CBZREventToggleInversion);
             break;
         case '+':
         case '=':

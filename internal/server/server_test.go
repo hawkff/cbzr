@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cbzr/internal/book"
@@ -92,5 +93,26 @@ func TestPageRejectsOversizedDimensions(t *testing.T) {
 	s.handleBook(res, httptest.NewRequest("GET", "/b/0/page/0", nil))
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("oversized page: HTTP %d", res.Code)
+	}
+}
+
+func TestReaderInversionQuery(t *testing.T) {
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	s := new(Server)
+	s.SetBooks([]*book.Book{pageBook(t, "page.png", data.Bytes())})
+	for _, query := range []string{"", "0", "1", "true", "<script>"} {
+		res := httptest.NewRecorder()
+		s.handleBook(res, httptest.NewRequest("GET", "/b/0/?invert="+query, nil))
+		want := "inverted=false;"
+		if query == "1" {
+			want = "inverted=true;"
+		}
+		body := strings.Join(strings.Fields(res.Body.String()), "")
+		if res.Code != http.StatusOK || !strings.Contains(body, want) {
+			t.Fatalf("inversion query %q: HTTP %d, missing %q", query, res.Code, want)
+		}
 	}
 }

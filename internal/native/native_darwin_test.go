@@ -4,6 +4,7 @@ package native
 
 import (
 	"archive/zip"
+	"bytes"
 	"image"
 	"image/png"
 	"os"
@@ -70,5 +71,68 @@ func TestWebtoonFrameKeepsTallPagesWidthFit(t *testing.T) {
 	}
 	if img.Bounds().Dx() != 100 {
 		t.Fatal("native webtoon upscaled a narrow page")
+	}
+}
+
+func TestNativeInversionKeepsOriginalPages(t *testing.T) {
+	var data bytes.Buffer
+	z := zip.NewWriter(&data)
+	for _, name := range []string{"1.png", "2.png"} {
+		w, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := png.Encode(w, image.NewGray(image.Rect(0, 0, 8, 8))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "pages.cbz")
+	if err := os.WriteFile(path, data.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := book.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	for _, mode := range []string{"single", "spread", "webtoon"} {
+		t.Run(mode, func(t *testing.T) {
+			r := &reader{book: b, state: State{Zoom: 1, CenterX: .5, CenterY: .5, Spread: mode == "spread", Webtoon: mode == "webtoon"}, scaledPages: make(map[scaledPageKey]image.Image)}
+			points := []image.Point{{16, 4}}
+			margin := image.Pt(0, 0)
+			if r.state.Spread {
+				points = []image.Point{{7, 8}, {24, 8}}
+				margin = image.Pt(16, 0)
+			}
+			for _, inverted := range []bool{false, true, false} {
+				r.state.Inverted = inverted
+				frame := r.frame(32, 16)
+				if frame == nil {
+					t.Fatal(r.err)
+				}
+				want := uint32(0)
+				if inverted {
+					want = 0xffff
+				}
+				for _, p := range points {
+					if red, _, _, _ := frame.At(p.X, p.Y).RGBA(); red != want {
+						t.Fatalf("inverted=%v: pixel %v = %d, want %d", inverted, p, red, want)
+					}
+				}
+				if red, _, _, _ := frame.At(margin.X, margin.Y).RGBA(); red != 0 {
+					t.Fatal("inversion brightened the page margins")
+				}
+			}
+			cached, err := r.scaledPage(0, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if red, _, _, _ := cached.At(0, 0).RGBA(); red != 0 {
+				t.Fatal("inversion changed a cached page")
+			}
+		})
 	}
 }

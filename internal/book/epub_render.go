@@ -75,15 +75,15 @@ func epubFaces() (font.Face, font.Face, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	fallback, err := epubFallbackFont()
+	fallbacks, err := epubFallbackFonts()
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := newEPUBFace(regular, fallback, 32)
+	r, err := newEPUBFace(regular, fallbacks, 32)
 	if err != nil {
 		return nil, nil, err
 	}
-	b, err := newEPUBFace(bold, fallback, 40)
+	b, err := newEPUBFace(bold, fallbacks, 40)
 	if err != nil {
 		r.Close()
 		return nil, nil, err

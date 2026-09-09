@@ -66,16 +66,21 @@ errors. Unused obfuscated fonts do not prevent reading. cbzr does not fetch
 EPUB resources over the network; external image/content references and remote
 stylesheet links produce errors. Internal DTDs and `xml:base` are unsupported.
 
-cbzr keeps the bundled Go fonts for text and uses an installed fallback for
-missing glyphs: Apple Symbols on macOS, Segoe UI Symbol on Windows, or DejaVu
-Sans when available on Linux/BSD. Set `CBZR_EPUB_FALLBACK_FONT` to a TTF/OTF
-file (up to 32 MiB) to choose another fallback. Font data stays fixed for the
-process; restart cbzr after changing it. Switching fallback fonts can change
-page numbers.
+cbzr keeps the bundled Go fonts for text and checks installed fallback fonts
+for each missing glyph. On macOS it checks Apple Symbols, Arial Unicode and
+CJK fonts. On Windows it checks Segoe UI Symbol, Arial and CJK fonts;
+on Linux/BSD it checks DejaVu Sans and Noto fonts at standard installation paths.
+This covers symbols and punctuation such as `◎` and `『』` when those fonts
+are available.
+
+Set `CBZR_EPUB_FALLBACK_FONT` to a TTF/OTF file or TTC/OTC collection to replace
+the system fallback list. Each file must fit within 32 MiB and contain at most
+32 faces. Font data stays fixed for the process; restart cbzr after changing
+it. Switching fallback fonts can change page numbers.
 
 cbzr renders unshaped Latin, Greek and Cyrillic text, normalizes it to NFC,
-and removes soft hyphens. Glyphs absent from both fonts, remaining combining
-marks and scripts that need shaping still produce errors.
+and removes soft hyphens. Glyphs absent from the available fonts, remaining
+combining marks and scripts that need shaping still produce errors.
 
 EPUB limits: 10,000 archive files and generated pages; 1 MiB per metadata file;
 4 MiB per content document; 16 MiB of XML across opening; 128 XML nesting
@@ -117,6 +122,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `r` / `d` in bookmarks | rename / delete mark |
 | `S` | screenshot page to PNG (`CBZR_SHOT_DIR` or cwd) |
 | `R` | rotate 90° cw |
+| `i` | toggle color inversion in the active pane |
 | `+` / `-` / `0` | zoom in / out / reset |
 | arrows | pan while zoomed |
 | `/` | OCR search via tesseract (`CBZR_OCR_LANG`, default `eng`) |
@@ -132,7 +138,12 @@ cbzr probes the terminal and chooses a rendering backend.
 The mouse wheel scrolls in webtoon mode and turns pages outside it.
 Left-click a pane to focus it. The native macOS reader accepts numeric
 prefixes for `j`, `k`, `J`, and `K`. It supports `g`, `G`, `t`,
-`s`, `R`, `+`, `-`, `0`, arrow keys, `f`, `q`, and `Q`.
+`s`, `R`, `i`, `+`, `-`, `0`, arrow keys, `f`, `q`, and `Q`.
+
+Press `i` to switch dark text on white to white text on dark; press it again
+to restore the colors. Inversion stays with the pane across page turns and
+native/terminal switches. Screenshots use the current colors. Inversion does
+not change the book file or persist after quitting.
 
 Reopen a book at the same path to resume its saved page and webtoon offset.
 cbzr stores positions in the user configuration directory. Closing the
@@ -146,4 +157,5 @@ split with `O`, closing a pane, or entering the native reader cancels the search
 
 `e` starts a server on `127.0.0.1` using a random port from 50000 through
 59999, then opens the current book and page. The web reader uses
-`h`/`l`/`g`/`G` for navigation. The index at `/` lists open books.
+`h`/`l`/`g`/`G` for navigation and `i` to toggle color inversion. It opens with
+the active terminal pane's inversion setting. The index at `/` lists open books.
