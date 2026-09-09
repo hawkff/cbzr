@@ -90,6 +90,9 @@ func TestOpenUsesAbsolutePath(t *testing.T) {
 	if _, err := b.Page(0); err != nil {
 		t.Fatal(err)
 	}
+	if !b.CanInvertPage(0) || b.CanInvertPage(-1) || b.CanInvertPage(b.Len()) {
+		t.Fatal("comic inversion eligibility or page bounds changed")
+	}
 }
 
 func TestNaturalLessZeroRuns(t *testing.T) {

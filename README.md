@@ -22,6 +22,10 @@ Building cbzr requires Go 1.26.4+. The native frontend requires macOS with cgo
 and Xcode command-line tools. GitHub Actions checks that build on macOS.
 Docker's cross-compiled Darwin binaries use the terminal frontend only.
 
+Native CI builds from a version tag such as `v0.2.0` print `cbzr 0.2.0`.
+Branch and PR builds print `cbzr dev+<commit>`. For Docker release builds,
+pass `--build-arg VERSION=0.2.0`.
+
 OCR search also requires
 [tesseract](https://github.com/tesseract-ocr/tesseract)
 (`brew install tesseract` / `apt install tesseract-ocr`).
@@ -122,7 +126,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `r` / `d` in bookmarks | rename / delete mark |
 | `S` | screenshot page to PNG (`CBZR_SHOT_DIR` or cwd) |
 | `R` | rotate 90° cw |
-| `i` | toggle color inversion in the active pane |
+| `i` | toggle inversion in the active pane: EPUB text only; whole comic pages |
 | `+` / `-` / `0` | zoom in / out / reset |
 | arrows | pan while zoomed |
 | `/` | OCR search via tesseract (`CBZR_OCR_LANG`, default `eng`) |
@@ -141,9 +145,13 @@ prefixes for `j`, `k`, `J`, and `K`. It supports `g`, `G`, `t`,
 `s`, `R`, `i`, `+`, `-`, `0`, arrow keys, `f`, `q`, and `Q`.
 
 Press `i` to switch dark text on white to white text on dark; press it again
-to restore the colors. Inversion stays with the pane across page turns and
-native/terminal switches. Screenshots use the current colors. Inversion does
-not change the book file or persist after quitting.
+to restore the colors. In EPUBs, only text pages invert. Illustrations and
+scanned text inside images keep their original colors, including in spreads
+and webtoon views. CBZ/CBR inversion applies to the whole page.
+
+Inversion stays with the pane across page turns and native/terminal switches.
+Browser views and screenshots follow the same text/image rules. Inversion
+does not change the book file or persist after quitting.
 
 Reopen a book at the same path to resume its saved page and webtoon offset.
 cbzr stores positions in the user configuration directory. Closing the

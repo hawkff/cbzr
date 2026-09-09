@@ -38,7 +38,12 @@ jobs:
       - name: Build native macOS frontend
         if: runner.os == 'macOS' && matrix.cgo == '1'
         run: |
-          GOARCH=arm64 go build -trimpath -ldflags "-X main.version=${GITHUB_SHA::12}" -o dist/cbzr-native .
+          version="dev+${GITHUB_SHA::12}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          GOARCH=arm64 go build -trimpath -ldflags "-X main.version=$version" -o dist/cbzr-native .
+          test "$(dist/cbzr-native -version)" = "cbzr $version"
           clang -fobjc-arc -framework Cocoa internal/native/testdata/input.m -o "$RUNNER_TEMP/native-input-test"
           "$RUNNER_TEMP/native-input-test"
       - name: Upload native macOS ARM64 binary

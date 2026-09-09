@@ -1189,7 +1189,7 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 			return shotMsg{err: err}
 		}
 		img = render.Transform(img, rot, zoom, cx, cy)
-		if inverted {
+		if inverted && b.CanInvertPage(page) {
 			img = render.Invert(img)
 		}
 		dir := os.Getenv("CBZR_SHOT_DIR")
@@ -1395,7 +1395,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			return nil, fmt.Errorf("EPUB text needs pixel rendering: %s", hint)
 		}
-		return b.Page(pg)
+		img, err := b.Page(pg)
+		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
+			img = render.Invert(img)
+		}
+		return img, err
 	}
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
@@ -1415,7 +1419,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			if err != nil {
 				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, err: err}
 			}
-			if inverted {
+			if !webtoon && inverted && b.CanInvertPage(pg) {
 				img = render.Invert(img)
 			}
 			res, err := r.Render(img, id, cols, rows)
@@ -1668,7 +1672,7 @@ EPUB text: Kitty/Ghostty graphics, browser, or native macOS.
   F              bookmarks menu
   S              screenshot page → PNG (CBZR_SHOT_DIR or cwd)
   R              rotate 90° cw
-  i              toggle color inversion in the active pane
+  i              toggle inversion (EPUB: text only; comics: whole page)
   + / -          zoom in / out
   0              reset zoom
   arrows         pan while zoomed

@@ -48,6 +48,7 @@ const (
 
 type scaledPageKey struct {
 	page, width, rotation int
+	inverted              bool
 }
 
 type reader struct {
@@ -113,9 +114,6 @@ func (r *reader) frame(width, height int) *image.RGBA {
 	var err error
 	if r.state.Webtoon {
 		img, err = r.webtoonFrame(width, height)
-		if err == nil && r.state.Inverted {
-			img = render.Invert(img)
-		}
 	} else {
 		img, err = r.pageFrame(width, height)
 	}
@@ -155,7 +153,7 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 		return nil, err
 	}
 	left = render.Transform(left, r.state.Rotation, r.state.Zoom, r.state.CenterX, r.state.CenterY)
-	if r.state.Inverted {
+	if r.state.Inverted && r.book.CanInvertPage(r.state.Page) {
 		left = render.Invert(left)
 	}
 	if !r.state.Spread || r.state.Page+1 >= r.book.Len() {
@@ -166,7 +164,7 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 		return nil, err
 	}
 	right = render.Transform(right, r.state.Rotation, r.state.Zoom, r.state.CenterX, r.state.CenterY)
-	if r.state.Inverted {
+	if r.state.Inverted && r.book.CanInvertPage(r.state.Page+1) {
 		right = render.Invert(right)
 	}
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -179,7 +177,7 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 }
 
 func (r *reader) scaledPage(page, width int) (image.Image, error) {
-	key := scaledPageKey{page: page, width: width, rotation: r.state.Rotation}
+	key := scaledPageKey{page: page, width: width, rotation: r.state.Rotation, inverted: r.state.Inverted && r.book.CanInvertPage(page)}
 	if img, ok := r.scaledPages[key]; ok {
 		return img, nil
 	}
@@ -189,6 +187,9 @@ func (r *reader) scaledPage(page, width int) (image.Image, error) {
 	}
 	img = render.Transform(img, r.state.Rotation, 1, 0.5, 0.5)
 	img = scaleToWidth(img, width)
+	if key.inverted {
+		img = render.Invert(img)
+	}
 	r.scaledPages[key] = img
 	r.scaledOrder = append(r.scaledOrder, key)
 	for len(r.scaledOrder) > 4 {

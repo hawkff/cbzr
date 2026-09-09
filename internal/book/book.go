@@ -35,6 +35,7 @@ type Book struct {
 
 	arc   archive
 	pages []entry
+	epub  bool
 
 	chapOnce sync.Once
 	chaps    []Chapter
@@ -116,6 +117,11 @@ func (b *Book) Close() error {
 
 // Len returns the number of pages.
 func (b *Book) Len() int { return len(b.pages) }
+
+// CanInvertPage excludes EPUB illustrations while allowing comic page inversion.
+func (b *Book) CanInvertPage(i int) bool {
+	return i >= 0 && i < len(b.pages) && (!b.epub || b.IsTextPage(i))
+}
 
 // PageBytes returns the raw encoded bytes of page i (for HTTP serving).
 func (b *Book) PageBytes(i int) ([]byte, string, error) {

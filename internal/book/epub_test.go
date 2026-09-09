@@ -169,6 +169,11 @@ func TestOpenEPUBMixedImagesAndRelativeReferences(t *testing.T) {
 	if b.Len() != 6 {
 		t.Fatalf("pages = %d", b.Len())
 	}
+	for i := -1; i <= b.Len(); i++ {
+		if b.CanInvertPage(i) != b.IsTextPage(i) {
+			t.Fatalf("EPUB inversion eligibility differs from text page status at %d", i)
+		}
+	}
 	if textEPUBPage(t, b, 0) != "Before" || textEPUBPage(t, b, 2) != "After" || !strings.HasPrefix(textEPUBPage(t, b, 4), "First heading") || textEPUBPage(t, b, 5) != "Last note." {
 		t.Fatal("DOM/spine order changed")
 	}
@@ -195,8 +200,8 @@ func TestOpenEPUBImageOnlySpine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if b.Len() != 1 || b.IsTextPage(0) {
-		t.Fatal("image-only spine not preserved")
+	if b.Len() != 1 || b.IsTextPage(0) || b.CanInvertPage(0) {
+		t.Fatal("image-only EPUB must keep its original colors")
 	}
 	img, err := b.Page(0)
 	if err != nil || img.Bounds() != image.Rect(0, 0, 3, 5) {

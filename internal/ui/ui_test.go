@@ -491,7 +491,8 @@ func TestOpenSplitRendersOriginalPaneAndCancelsSearch(t *testing.T) {
 	}
 }
 
-func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
+func testEPUBPath(t *testing.T) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "text.epub")
 	f, err := os.Create(path)
 	if err != nil {
@@ -515,7 +516,7 @@ func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := png.Encode(w, image.NewRGBA(image.Rect(0, 0, 4, 40))); err != nil {
+	if err := png.Encode(w, image.NewGray(image.Rect(0, 0, 40, 40))); err != nil {
 		t.Fatal(err)
 	}
 	if err := z.Close(); err != nil {
@@ -524,6 +525,11 @@ func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
+
+func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
+	path := testEPUBPath(t)
 	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, true, []string{path})
 	if m.panes[0].book == nil {
 		t.Fatalf("open EPUB: %v", m.panes[0].err)
@@ -667,5 +673,100 @@ func TestInversionSurvivesNavigationAndScreenshot(t *testing.T) {
 	}
 	if r, _, _, _ := img.At(0, 0).RGBA(); r != 0xffff {
 		t.Fatal("screenshot lost its captured inversion setting")
+	}
+}
+
+type recordingRenderer struct {
+	render.Renderer
+	images []image.Image
+}
+
+func (r *recordingRenderer) Name() string { return "recording" }
+func (r *recordingRenderer) Render(img image.Image, _ uint32, _, _ int) (render.Result, error) {
+	r.images = append(r.images, img)
+	return render.Result{}, nil
+}
+
+func TestEPUBInversionLeavesIllustrationsUnchanged(t *testing.T) {
+	b, err := book.Open(testEPUBPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	for _, mode := range []string{"text", "image", "spread", "webtoon"} {
+		t.Run(mode, func(t *testing.T) {
+			m := testModel()
+			m.height = 12
+			m.spread, m.webtoon = mode == "spread", mode == "webtoon"
+			r := &recordingRenderer{Renderer: m.renderer}
+			m.renderer = r
+			p := m.panes[0]
+			p.book = b
+			if mode == "image" || m.webtoon {
+				p.page = 1
+			}
+			for _, inverted := range []bool{false, true, false} {
+				p.inverted = inverted
+				r.images = nil
+				switch msg := m.renderPane(0)().(type) {
+				case renderedMsg:
+					if msg.err != nil {
+						t.Fatal(msg.err)
+					}
+				case tea.BatchMsg:
+					for _, cmd := range msg {
+						if msg := cmd().(renderedMsg); msg.err != nil {
+							t.Fatal(msg.err)
+						}
+					}
+				}
+				wantCount := 1
+				if m.spread {
+					wantCount = 2
+				}
+				if len(r.images) != wantCount {
+					t.Fatalf("rendered %d images, want %d", len(r.images), wantCount)
+				}
+				textColor := uint32(0xffff)
+				if inverted {
+					textColor = 0
+				}
+				for i, img := range r.images {
+					want, point := textColor, image.Pt(0, 0)
+					if mode == "image" || i == 1 || m.webtoon {
+						want = 0
+					}
+					if m.webtoon {
+						point.X = img.Bounds().Dx() / 2
+						if red, _, _, _ := img.At(point.X, 41).RGBA(); red != textColor {
+							t.Fatalf("mixed strip text = %d, want %d", red, textColor)
+						}
+					}
+					if red, _, _, _ := img.At(point.X, point.Y).RGBA(); red != want {
+						t.Fatalf("inverted=%v, slot=%d: pixel = %d, want %d", inverted, i, red, want)
+					}
+				}
+			}
+		})
+	}
+	m := testModel()
+	m.panes[0].book, m.panes[0].page, m.panes[0].inverted = b, 1, true
+	t.Setenv("CBZR_SHOT_DIR", t.TempDir())
+	_, cmd := m.screenshot()
+	shot := cmd().(shotMsg)
+	if shot.err != nil {
+		t.Fatal(shot.err)
+	}
+	f, err := os.Open(shot.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if red, _, _, _ := img.At(0, 0).RGBA(); red != 0 {
+		t.Fatal("screenshot inverted the EPUB illustration")
 	}
 }

@@ -264,7 +264,7 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 		manifest[id] = epubItem{name, media}
 		resources[name] = media
 	}
-	b := &Book{Path: filename, Title: opf.child("metadata").child("title").allText(), arc: arc, cache: make(map[int]image.Image)}
+	b := &Book{Path: filename, Title: opf.child("metadata").child("title").allText(), arc: arc, epub: true, cache: make(map[int]image.Image)}
 	if b.Title == "" {
 		b.Title = strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
 	}
