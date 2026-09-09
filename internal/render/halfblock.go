@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"strings"
+	"sync"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -11,6 +12,7 @@ import (
 // HalfBlock renders with U+2580 (upper half block): two pixels per cell
 // using truecolor fg/bg. Works in any 24-bit color terminal.
 type HalfBlock struct {
+	mu     sync.Mutex
 	cw, ch float64
 }
 
@@ -22,12 +24,15 @@ func NewHalfBlock() *HalfBlock {
 
 func (h *HalfBlock) Name() string { return "halfblock" }
 
-func (h *HalfBlock) SetCellSize(cw, ch float64) { h.cw, h.ch = cw, ch }
+func (h *HalfBlock) SetCellSize(cw, ch float64) { h.mu.Lock(); h.cw, h.ch = cw, ch; h.mu.Unlock() }
 
 func (h *HalfBlock) Render(img image.Image, _ uint32, maxCols, maxRows int) (Result, error) {
+	h.mu.Lock()
+	cw, ch := h.cw, h.ch
+	h.mu.Unlock()
 	b := img.Bounds()
 	// Aspect: cell is cw x ch px, and a cell holds 1x2 "pixels".
-	cols, rows, _, _ := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, h.cw, h.ch)
+	cols, rows, _, _ := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, cw, ch)
 
 	dst := image.NewRGBA(image.Rect(0, 0, cols, rows*2))
 	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)

@@ -11,3 +11,21 @@ AGENTS.md
 #folders
 /docs/
 /dist/
+.pi-subagents/
+
+# Local runtime and credentials
+.pi/
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+credentials.json
+
+# Local build and test outputs
+/cbzr
+/cbzr.exe
+*.test
+*.test.exe
+/coverage.out

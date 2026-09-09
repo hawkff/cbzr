@@ -23,9 +23,6 @@ type Server struct {
 	port  int
 }
 
-// New creates an idle server; Start binds it lazily.
-func New() *Server { return &Server{} }
-
 // SetBooks replaces the served book list (index = pane order).
 func (s *Server) SetBooks(bs []*book.Book) {
 	s.mu.Lock()
@@ -60,7 +57,7 @@ func (s *Server) Start() (int, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/b/", s.handleBook)
-	go http.Serve(ln, mux) //nolint:errcheck // dies with the process
+	go http.Serve(ln, s.authorize(mux)) //nolint:errcheck // dies with the process
 	return s.port, nil
 }
 
@@ -84,6 +81,17 @@ func (s *Server) Close() error {
 	err := s.ln.Close()
 	s.ln = nil
 	return err
+}
+
+func (s *Server) authorize(next http.Handler) http.Handler {
+	authority := "127.0.0.1:" + strconv.Itoa(s.port)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != authority {
+			http.Error(w, "invalid host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) snapshot() []*book.Book {
@@ -142,7 +150,7 @@ func (s *Server) handleBook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", mime)
-		w.Header().Set("Cache-Control", "max-age=3600")
+		w.Header().Set("Cache-Control", "no-store")
 		w.Write(data) //nolint:errcheck
 		return
 	}

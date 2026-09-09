@@ -22,21 +22,22 @@ type comicInfo struct {
 	} `xml:"Pages"`
 }
 
-// Chapters returns chapter markers from ComicInfo.xml bookmarks, falling
-// back to top-level folders inside the archive. Nil when neither exists.
-func (b *Book) Chapters() []Chapter {
+// Chapters returns ComicInfo.xml bookmarks or top-level folder markers.
+// It returns nil, nil when neither exists, and reports metadata read or
+// parse errors without falling back to folders.
+func (b *Book) Chapters() ([]Chapter, error) {
 	b.chapOnce.Do(func() {
-		b.chaps = b.comicInfoChapters()
-		if b.chaps == nil {
+		b.chaps, b.chapErr = b.comicInfoChapters()
+		if b.chaps == nil && b.chapErr == nil {
 			b.chaps = b.folderChapters()
 		}
 	})
-	return b.chaps
+	return b.chaps, b.chapErr
 }
 
-func (b *Book) comicInfoChapters() []Chapter {
+func (b *Book) comicInfoChapters() ([]Chapter, error) {
 	if b.arc == nil {
-		return nil
+		return nil, nil
 	}
 	for _, f := range b.arc.Entries() {
 		if !strings.EqualFold(filepath.Base(f.Name()), "comicinfo.xml") {
@@ -44,13 +45,17 @@ func (b *Book) comicInfoChapters() []Chapter {
 		}
 		r, err := f.Open()
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		var ci comicInfo
-		err = xml.NewDecoder(r).Decode(&ci)
+		data, err := readBounded(r, maxMetadataBytes)
 		r.Close()
 		if err != nil {
-			return nil
+			return nil, err
+		}
+		var ci comicInfo
+		err = xml.Unmarshal(data, &ci)
+		if err != nil {
+			return nil, err
 		}
 		var chs []Chapter
 		for _, p := range ci.Pages.Page {
@@ -60,9 +65,9 @@ func (b *Book) comicInfoChapters() []Chapter {
 			chs = append(chs, Chapter{Title: p.Bookmark, Page: p.Image})
 		}
 		sort.Slice(chs, func(i, j int) bool { return chs[i].Page < chs[j].Page })
-		return chs
+		return chs, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func (b *Book) folderChapters() []Chapter {
