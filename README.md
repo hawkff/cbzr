@@ -1,10 +1,12 @@
 # cbzr
 
-A terminal reader for CBZ and CBR comics, with single-page, two-page spread,
-continuous webtoon, split-screen, and native macOS modes.
+A terminal reader for CBZ/CBR comics and text or comic EPUBs, with single-page,
+two-page spread, continuous webtoon, split-screen, and native macOS modes.
+For EPUB text, use Kitty/Ghostty graphics, the browser, or the native reader.
 
 ```
 cbzr book.cbz             one book
+cbzr novel.epub           text or comic EPUB
 cbzr one.cbz two.cbr      split screen
 cbzr                      empty pane; press o for the file picker
 cbzr -renderer=halfblock  force the fallback renderer
@@ -28,10 +30,53 @@ OCR search also requires
 
 - cbzr reads .cbz/.zip and .cbr/.rar archives. It detects the format from the
   file signature, so an archive still opens when its extension is wrong.
-- cbzr sorts pages in natural order (`p2` before `p10`).
+- cbzr sorts comic archive images in natural order (`p2` before `p10`).
+  For EPUBs, it follows the package spine and document order.
 - cbzr decodes JPEG, PNG, GIF, WebP, and BMP page images.
 - cbzr limits decompressed page data to 64 MiB and image dimensions to
   32 million pixels. ComicInfo.xml must fit within 1 MiB.
+
+### EPUB
+
+cbzr reads a subset of EPUB 2/3: XHTML text and raster-image comics in ZIP
+containers. It reads the first OPF package listed in `META-INF/container.xml`,
+uses its title, and includes auxiliary (`linear="no"`) spine items in order.
+It opens EPUBs with a different extension when they contain that container file.
+
+Text uses bundled Go fonts on fixed 900×1200 image pages, with wrapped
+paragraphs and bold headings. Inline and block images occupy separate pages
+at their position in the text. Raster images keep their original dimensions.
+For simple SVG wrappers, cbzr puts each referenced raster image on a separate
+page and ignores SVG positioning and sizing. The chapter menu (`tab`) uses
+headings, or the document title when it has no headings. It does not use EPUB
+nav/NCX anchors.
+
+Use `e` for the browser, `f` for native macOS, or Kitty/Ghostty with the Kitty
+renderer to read text pages. The halfblock renderer shows guidance on text
+pages and still displays comic images. Leave webtoon mode with `t` to step
+past a text page in halfblock. Bookmarks, saved positions and screenshots use
+the generated page numbers; text search still requires OCR.
+
+cbzr ignores XHTML CSS, embedded fonts and inline emphasis styling. It reflows
+whitespace and lists without preserving table geometry or fixed-layout
+placement. cbzr displays hyperlink labels without navigation and does not
+follow manifest fallback chains. Scripts, SVG drawings/transforms/style
+attributes, audio/video, MathML and encrypted required resources produce
+errors. Unused obfuscated fonts do not prevent reading. cbzr does not fetch
+EPUB resources over the network; external image/content references and remote
+stylesheet links produce errors. Internal DTDs and `xml:base` are unsupported.
+
+cbzr renders unshaped Latin, Greek and Cyrillic text when the bundled fonts
+contain its glyphs. It normalizes text to NFC and removes soft hyphens;
+missing glyphs, remaining combining marks and scripts that need shaping
+produce errors.
+
+EPUB limits: 10,000 archive files and generated pages; 1 MiB per metadata file;
+4 MiB per content document; 16 MiB of XML across opening; 128 XML nesting
+levels and SVG resource hops; 200,000 XML tokens per document. The page byte
+and pixel limits above also apply. cbzr lays out text while opening the book
+and renders page images on demand. It checks raster-image bytes on page access;
+corrupt or oversized images produce page errors rather than preventing opening.
 
 ## Rendering
 
@@ -59,7 +104,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `w` | switch pane |
 | `v` | toggle split (keeps active pane) |
 | `s` | two-page spread: pages N and N+1 side by side (single pane) |
-| `tab` | chapter menu (ComicInfo.xml bookmarks or archive folders) |
+| `tab` | chapter menu (EPUB headings/titles, ComicInfo.xml bookmarks or archive folders) |
 | `b` | toggle bookmark on this page |
 | `F` | bookmarks menu (persisted in the user config dir) |
 | `/` in menus | fuzzy filter (subsequence match) |

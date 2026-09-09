@@ -28,8 +28,7 @@ func IsImagePath(p string) bool {
 	return imageExts[strings.ToLower(filepath.Ext(p))]
 }
 
-// Book is an open comic archive (.cbz/.zip or .cbr/.rar) with pages sorted
-// in natural order.
+// Book holds image pages from a comic archive or an EPUB reading order.
 type Book struct {
 	Path  string
 	Title string
@@ -53,7 +52,7 @@ const (
 	maxMetadataBytes = 1 << 20
 )
 
-// Open opens a comic archive and indexes its image entries.
+// Open indexes comic images in natural order or EPUB content in spine order.
 func Open(path string) (*Book, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
@@ -62,6 +61,24 @@ func Open(path string) (*Book, error) {
 	arc, err := openArchive(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
+	}
+	isEPUB := strings.EqualFold(filepath.Ext(path), ".epub")
+	for _, e := range arc.Entries() {
+		if e.Name() == "META-INF/container.xml" {
+			isEPUB = true
+			break
+		}
+	}
+	if isEPUB {
+		if _, ok := arc.(*zipArchive); !ok {
+			arc.Close()
+			return nil, fmt.Errorf("EPUB requires a ZIP container")
+		}
+		b, err := openEPUB(arc, path)
+		if err != nil {
+			arc.Close()
+		}
+		return b, err
 	}
 	var pages []entry
 	for _, e := range arc.Entries() {
@@ -115,14 +132,14 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("decode page %d: %w", i+1, err)
 	}
 	if config.Width <= 0 || config.Height <= 0 || config.Width > maxPagePixels/config.Height {
 		return nil, "", fmt.Errorf("page %d exceeds %d decoded pixels", i+1, maxPagePixels)
 	}
-	return data, mimeFor(e.Name()), nil
+	return data, "image/" + format, nil
 }
 
 // Page decodes page i, using a small in-memory cache.
@@ -158,22 +175,6 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 	b.mu.Unlock()
 	return img, nil
-}
-
-func mimeFor(name string) string {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".png":
-		return "image/png"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	case ".bmp":
-		return "image/bmp"
-	}
-	return "application/octet-stream"
 }
 
 func readBounded(r io.Reader, limit int64) ([]byte, error) {

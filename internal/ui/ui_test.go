@@ -480,3 +480,91 @@ func TestOpenSplitRendersOriginalPaneAndCancelsSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "text.epub")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := zip.NewWriter(f)
+	for name, text := range map[string]string{
+		"META-INF/container.xml": `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
+		"book.opf":               `<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="text" href="text.xhtml" media-type="application/xhtml+xml"/><item id="image" href="page.png" media-type="image/png"/></manifest><spine><itemref idref="text"/><itemref idref="image"/><itemref idref="text"/></spine></package>`,
+		"text.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Readable text.</p></body></html>`,
+	} {
+		w, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := z.Create("page.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(w, image.NewRGBA(image.Rect(0, 0, 4, 40))); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, true, []string{path})
+	if m.panes[0].book == nil {
+		t.Fatalf("open EPUB: %v", m.panes[0].err)
+	}
+	defer m.panes[0].book.Close()
+	m.width, m.height = 100, 30
+	allowed := false
+	for _, ext := range m.picker.AllowedTypes {
+		if ext == ".epub" {
+			allowed = true
+		}
+	}
+	if !allowed {
+		t.Fatal("picker excludes EPUB")
+	}
+	msg := m.renderPane(0)().(renderedMsg)
+	if msg.err == nil || !strings.Contains(msg.err.Error(), "use e for browser, f for native") || m.panes[0].book == nil {
+		t.Fatalf("halfblock guidance: %v", msg.err)
+	}
+	if _, err := m.panes[0].book.Page(0); err != nil {
+		t.Fatalf("native/browser text unavailable: %v", err)
+	}
+	m.panes[0].page = 1
+	if msg := m.renderPane(0)().(renderedMsg); msg.err != nil {
+		t.Fatalf("comic image blocked: %v", msg.err)
+	}
+	m.spread = true
+	for _, page := range []int{0, 1} {
+		for _, reverse := range []bool{false, true} {
+			m.panes[0].page = page
+			cmds := m.renderPane(0)().(tea.BatchMsg)
+			if len(cmds) != 2 {
+				t.Fatalf("spread commands = %d", len(cmds))
+			}
+			if reverse {
+				cmds[0], cmds[1] = cmds[1], cmds[0]
+			}
+			for _, cmd := range cmds {
+				updated, _ := m.Update(cmd())
+				m = updated.(Model)
+			}
+			view := m.View()
+			if !strings.Contains(view, "EPUB text needs pixel rendering") || !strings.Contains(view, "▀") {
+				t.Fatalf("spread page %d, reverse %v hid guidance or image: %q", page, reverse, view)
+			}
+		}
+	}
+	m.spread = false
+	m.webtoon = true
+	m.panes[0].page = 0
+	if msg := m.renderPane(0)().(renderedMsg); msg.err == nil {
+		t.Fatal("webtoon silently used halfblock text")
+	}
+}
