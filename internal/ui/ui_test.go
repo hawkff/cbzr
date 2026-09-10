@@ -28,6 +28,57 @@ func TestStatusViewKeepsOriginalShortcutTips(t *testing.T) {
 	}
 }
 
+func TestPaneHeaderShowsCurrentChapter(t *testing.T) {
+	metadata := `<ComicInfo><Pages><Page Image="1" Bookmark="First chapter"/><Page Image="2" Bookmark="Second&#xA; chapter"/></Pages></ComicInfo>`
+	for _, tc := range []struct {
+		name, metadata, chapter string
+		page                    int
+		spread                  bool
+	}{
+		{"before first chapter", metadata, "", 0, false},
+		{"first chapter", metadata, "First chapter", 1, false},
+		{"next chapter", metadata, "Second chapter", 2, false},
+		{"spread uses left page", metadata, "First chapter", 1, true},
+		{"no metadata", "", "", 1, false},
+		{"invalid metadata", "<ComicInfo>", "", 1, false},
+		{"blank chapter", `<ComicInfo><Pages><Page Image="0" Bookmark=" &#x9; "/></Pages></ComicInfo>`, "", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var metadata []string
+			if tc.metadata != "" {
+				metadata = append(metadata, tc.metadata)
+			}
+			b, err := book.Open(testBookPath(t, metadata...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			m := testModel()
+			m.width, m.spread = 200, tc.spread
+			p := m.panes[0]
+			p.book, p.page = b, tc.page
+			for _, inverted := range []bool{false, true} {
+				p.inverted = inverted
+				header := m.paneLines(0)[0]
+				if strings.Contains(header, "inverted") || strings.ContainsAny(header, "\n\t") {
+					t.Fatalf("unexpected header: %q", header)
+				}
+				if tc.chapter == "" {
+					if strings.Contains(header, "chapter") || strings.Contains(header, "  []") {
+						t.Fatalf("missing chapter produced a label: %q", header)
+					}
+				} else if !strings.Contains(header, "["+tc.chapter+"]") {
+					t.Fatalf("header %q lacks chapter %q", header, tc.chapter)
+				}
+			}
+			p.rot, p.zoom = 1, 1.5
+			if header := m.paneLines(0)[0]; !strings.Contains(header, "90° 1.5x") {
+				t.Fatalf("chapter label lost view modifiers: %q", header)
+			}
+		})
+	}
+}
+
 func TestQuitSavePolicy(t *testing.T) {
 	plain, _ := (Model{}).updateRead(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if plain.(Model).SaveOnQuit() {

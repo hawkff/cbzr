@@ -160,7 +160,8 @@ cbzr probes the terminal and chooses a rendering backend.
 | `q` / `ctrl+c` | clear saved positions for open books and quit |
 | `Q` | save positions for open books and quit |
 
-The mouse wheel scrolls in webtoon mode and turns pages outside it.
+Pane headers show the chapter for the first visible page when chapter metadata
+is available. The mouse wheel scrolls in webtoon mode and turns pages outside it.
 Left-click a pane to focus it. The native macOS reader accepts numeric
 prefixes for `j`, `k`, `J`, and `K`. It supports `g`, `G`, `t`,
 `s`, `R`, `i`, `+`, `-`, `0`, arrow keys, `f`, `q`, and `Q`.
