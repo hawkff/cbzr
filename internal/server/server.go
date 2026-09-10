@@ -162,9 +162,14 @@ func (s *Server) handleBook(w http.ResponseWriter, r *http.Request) {
 				page = v
 			}
 		}
+		invertible := make([]bool, b.Len())
+		for i := range invertible {
+			invertible[i] = b.CanInvertPage(i)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		readerTmpl.Execute(w, map[string]any{ //nolint:errcheck
 			"N": n, "Title": b.Title, "Pages": b.Len(), "Page": page,
+			"Inverted": r.URL.Query().Get("invert") == "1", "Invertible": invertible,
 		})
 		return
 	}
@@ -190,24 +195,30 @@ header{padding:.4rem .8rem;display:flex;gap:1rem;align-items:center;background:#
 header a{color:#8cf;text-decoration:none}
 main{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden}
 img{max-width:100%;max-height:100%;object-fit:contain}
+img.inverted{filter:invert(1)}
 </style>
 <header>
   <a href="/">index</a><strong>{{.Title}}</strong>
   <span id="pos"></span>
-  <span style="opacity:.6">h/l or ←/→ pages, g/G first/last</span>
+  <span style="opacity:.6">h/l or ←/→ pages, g/G first/last, i invert</span>
 </header>
 <main><img id="pg" alt="page"></main>
 <script>
-const pages={{.Pages}}, n={{.N}};let p={{.Page}};
+const pages={{.Pages}}, n={{.N}}, invertible={{.Invertible}};let p={{.Page}}, inverted={{.Inverted}};
 const img=document.getElementById('pg'),pos=document.getElementById('pos');
-function show(){p=Math.max(0,Math.min(pages-1,p));img.src='/b/'+n+'/page/'+p;
-pos.textContent=(p+1)+'/'+pages;history.replaceState(null,'','/b/'+n+'/?p='+p);
+function show(){p=Math.max(0,Math.min(pages-1,p));const src='/b/'+n+'/page/'+p;
+if(img.getAttribute('src')!==src){img.style.visibility='hidden';img.src=src;}
+img.classList.toggle('inverted',inverted&&invertible[p]);
+pos.textContent=(p+1)+'/'+pages;history.replaceState(null,'','/b/'+n+'/?p='+p+(inverted?'&invert=1':''));
 if(p+1<pages){(new Image()).src='/b/'+n+'/page/'+(p+1);}}
 addEventListener('keydown',e=>{
 if(e.key==='l'||e.key==='ArrowRight'||e.key===' ')p++;
 else if(e.key==='h'||e.key==='ArrowLeft')p--;
-else if(e.key==='g')p=0;else if(e.key==='G')p=pages-1;else return;
+else if(e.key==='g')p=0;else if(e.key==='G')p=pages-1;
+else if(e.key==='i')inverted=!inverted;else return;
 e.preventDefault();show();});
 img.addEventListener('click',e=>{p+=(e.clientX>innerWidth/2)?1:-1;show();});
+img.addEventListener('load',()=>{if(img.complete)img.style.visibility='visible';});
+img.addEventListener('error',()=>{if(img.complete)img.style.visibility='visible';});
 show();
 </script>`))

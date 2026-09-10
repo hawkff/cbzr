@@ -14,7 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -67,7 +66,7 @@ func textEPUBPage(t *testing.T, b *Book, i int) string {
 	}
 	var lines []string
 	for _, line := range p.lines {
-		lines = append(lines, line.text)
+		lines = append(lines, strings.TrimRight(line.text, " "))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -169,6 +168,11 @@ func TestOpenEPUBMixedImagesAndRelativeReferences(t *testing.T) {
 	if b.Len() != 6 {
 		t.Fatalf("pages = %d", b.Len())
 	}
+	for i := -1; i <= b.Len(); i++ {
+		if b.CanInvertPage(i) != b.IsTextPage(i) {
+			t.Fatalf("EPUB inversion eligibility differs from text page status at %d", i)
+		}
+	}
 	if textEPUBPage(t, b, 0) != "Before" || textEPUBPage(t, b, 2) != "After" || !strings.HasPrefix(textEPUBPage(t, b, 4), "First heading") || textEPUBPage(t, b, 5) != "Last note." {
 		t.Fatal("DOM/spine order changed")
 	}
@@ -195,8 +199,8 @@ func TestOpenEPUBImageOnlySpine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if b.Len() != 1 || b.IsTextPage(0) {
-		t.Fatal("image-only spine not preserved")
+	if b.Len() != 1 || b.IsTextPage(0) || b.CanInvertPage(0) {
+		t.Fatal("image-only EPUB must keep its original colors")
 	}
 	img, err := b.Page(0)
 	if err != nil || img.Bounds() != image.Rect(0, 0, 3, 5) {
@@ -236,8 +240,6 @@ func TestOpenEPUBRejectsInvalidContent(t *testing.T) {
 		{"escaped image", "OPS/text/z.xhtml", `<body>`, `<body><img src="../../../p.png"/>`, "escapes"},
 		{"unlisted image", "OPS/text/z.xhtml", `<body>`, `<body><img src="panel.png"/>`, "not in manifest"},
 		{"svg drawing", "OPS/text/z.xhtml", `<body>`, `<body><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>`, "SVG drawing"},
-		{"shaping", "OPS/text/z.xhtml", `Hello`, `مرحبا`, "unsupported glyph or shaping"},
-		{"missing glyph", "OPS/text/z.xhtml", `Hello`, `漢字`, "unsupported glyph or shaping"},
 		{"XML base", "OPS/text/z.xhtml", `<body>`, `<body xml:base="../">`, "xml:base"},
 		{"all auxiliary", "OPS/book.opf", `<itemref idref="first"/>`, `<itemref idref="first" linear="no"/>`, "linear content"},
 		{"wrong namespace", "OPS/book.opf", `http://www.idpf.org/2007/opf`, `urn:wrong`, "namespace"},
@@ -322,7 +324,6 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.close()
 	if err := l.text("\U0010ffff", false); err == nil || !strings.Contains(err.Error(), "lacks glyph") {
 		t.Fatalf("missing font glyph: %v", err)
 	}
@@ -345,7 +346,7 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 			if line.y > epubPageHeight-epubMargin || len(line.text) == 0 {
 				t.Fatal("invalid text line")
 			}
-			if font.MeasureString(l.regular, line.text) > fixed.I(epubPageWidth-2*epubMargin) {
+			if epubLineWidth(line) > fixed.I(epubPageWidth-2*epubMargin) {
 				t.Fatal("long word failed to wrap")
 			}
 			actual.WriteString(strings.ReplaceAll(line.text, " ", ""))
@@ -402,7 +403,6 @@ func TestEPUBLazyImagesAndDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.close()
 	resources := map[string]string{"panel": "image/png"}
 	for range 2 {
 		if err := l.addImage(e, "panel", resources); err != nil {

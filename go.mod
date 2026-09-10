@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/go-text/typesetting v0.3.5
 	github.com/nwaples/rardecode/v2 v2.2.5
 	golang.org/x/image v0.43.0
 	golang.org/x/sys v0.46.0

@@ -7,15 +7,14 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+	"math"
 	"strings"
-	"unicode"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gobold"
-	"golang.org/x/image/font/gofont/goregular"
-	"golang.org/x/image/font/opentype"
+	"github.com/go-text/typesetting/font"
+	"github.com/go-text/typesetting/font/opentype"
+	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
-	"golang.org/x/text/unicode/norm"
+	"golang.org/x/image/vector"
 )
 
 const (
@@ -24,31 +23,93 @@ const (
 	epubMargin     = 60
 )
 
+type epubRun struct {
+	shaping.Output
+	font *font.Font
+	x    fixed.Int26_6
+}
+
 type epubLine struct {
-	text    string
-	y       int
-	heading bool
+	text        string
+	y           int
+	runs        []epubRun
+	annotations []epubLine
 }
 type epubTextPage struct{ lines []epubLine }
 
 func (p epubTextPage) Name() string { return "epub-text.png" }
 func (p epubTextPage) Open() (io.ReadCloser, error) {
-	regular, bold, err := epubFaces()
-	if err != nil {
-		return nil, err
-	}
-	defer regular.Close()
-	defer bold.Close()
 	canvas := image.NewRGBA(image.Rect(0, 0, epubPageWidth, epubPageHeight))
 	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
-	d := font.Drawer{Dst: canvas, Src: image.Black}
-	for _, line := range p.lines {
-		d.Face = regular
-		if line.heading {
-			d.Face = bold
+	// Retain glyph IDs and positions from pagination; only raster caches are private.
+	faces := map[*font.Font]*font.Face{}
+	raster := vector.NewRasterizer(0, 0)
+	var paint func(epubLine) error
+	paint = func(line epubLine) error {
+		for _, run := range line.runs {
+			face := faces[run.font]
+			if face == nil {
+				face = font.NewFace(run.font)
+				faces[run.font] = face
+			}
+			scale := float32(run.Size) / 64 / float32(face.Upem())
+			x := float32(epubMargin) + float32(run.x)/64
+			for _, glyph := range run.Glyphs {
+				if glyph.GlyphID != font.EmptyGlyph {
+					outline, ok := face.GlyphDataOutline(glyph.GlyphID)
+					if !ok {
+						return fmt.Errorf("EPUB glyph %d has no rasterizable outline", glyph.GlyphID)
+					}
+					ox := x + float32(glyph.XOffset)/64
+					oy := float32(line.y) - float32(glyph.YOffset)/64
+					bounds := image.Rect(
+						int(math.Floor(float64(ox+float32(glyph.XBearing)/64)))-1,
+						int(math.Floor(float64(oy-float32(glyph.YBearing)/64)))-1,
+						int(math.Ceil(float64(ox+float32(glyph.XBearing+glyph.Width)/64)))+1,
+						int(math.Ceil(float64(oy-float32(glyph.YBearing+glyph.Height)/64)))+1,
+					).Intersect(canvas.Bounds())
+					if len(outline.Segments) == 0 || bounds.Empty() {
+						x += float32(glyph.Advance) / 64
+						continue
+					}
+					ox -= float32(bounds.Min.X)
+					oy -= float32(bounds.Min.Y)
+					raster.Reset(bounds.Dx(), bounds.Dy())
+					for _, segment := range outline.Segments {
+						points := segment.Args
+						for i := range points {
+							points[i].X = ox + points[i].X*scale
+							points[i].Y = oy - points[i].Y*scale
+						}
+						switch segment.Op {
+						case opentype.SegmentOpMoveTo:
+							raster.ClosePath()
+							raster.MoveTo(points[0].X, points[0].Y)
+						case opentype.SegmentOpLineTo:
+							raster.LineTo(points[0].X, points[0].Y)
+						case opentype.SegmentOpQuadTo:
+							raster.QuadTo(points[0].X, points[0].Y, points[1].X, points[1].Y)
+						case opentype.SegmentOpCubeTo:
+							raster.CubeTo(points[0].X, points[0].Y, points[1].X, points[1].Y, points[2].X, points[2].Y)
+						}
+					}
+					raster.ClosePath()
+					raster.Draw(canvas, bounds, image.Black, image.Point{})
+				}
+				x += float32(glyph.Advance) / 64
+			}
 		}
-		d.Dot = fixed.P(epubMargin, line.y)
-		d.DrawString(line.text)
+		for _, annotation := range line.annotations {
+			if err := paint(annotation); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, line := range p.lines {
+		if err := paint(line); err != nil {
+			return nil, err
+		}
 	}
 	var data bytes.Buffer
 	if err := png.Encode(&data, canvas); err != nil {
@@ -66,30 +127,11 @@ func (b *Book) IsTextPage(i int) bool {
 	return ok
 }
 
-func epubFaces() (font.Face, font.Face, error) {
-	regular, err := opentype.Parse(goregular.TTF)
-	if err != nil {
-		return nil, nil, err
-	}
-	bold, err := opentype.Parse(gobold.TTF)
-	if err != nil {
-		return nil, nil, err
-	}
-	r, err := opentype.NewFace(regular, &opentype.FaceOptions{Size: 32, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return nil, nil, err
-	}
-	b, err := opentype.NewFace(bold, &opentype.FaceOptions{Size: 40, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		r.Close()
-		return nil, nil, err
-	}
-	return r, b, nil
-}
-
 type epubLayout struct {
 	book          *Book
-	regular, bold font.Face
+	regular, bold []*font.Face
+	shaper        shaping.HarfbuzzShaper
+	segmenter     shaping.Segmenter
 	lines         []epubLine
 	y             int
 	activeImages  map[string]bool
@@ -102,7 +144,6 @@ func newEPUBLayout(b *Book) (*epubLayout, error) {
 	}
 	return &epubLayout{book: b, regular: r, bold: h, y: epubMargin, activeImages: map[string]bool{}}, nil
 }
-func (l *epubLayout) close() { l.regular.Close(); l.bold.Close() }
 func (l *epubLayout) addPage(e entry) error {
 	if len(l.book.pages) >= maxEPUBPages {
 		return fmt.Errorf("EPUB exceeds %d pages", maxEPUBPages)
@@ -120,77 +161,6 @@ func (l *epubLayout) flushPage() error {
 	}
 	l.lines = nil
 	l.y = epubMargin
-	return nil
-}
-func (l *epubLayout) text(text string, heading bool) error {
-	text = norm.NFC.String(strings.ReplaceAll(text, "\u00ad", ""))
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return nil
-	}
-	face, height := l.regular, 44
-	if heading {
-		face, height = l.bold, 54
-	}
-	width := fixed.I(epubPageWidth - 2*epubMargin)
-	line := []rune{}
-	advance := fixed.Int26_6(0)
-	emit := func() error {
-		if len(line) == 0 {
-			return nil
-		}
-		if l.y+height > epubPageHeight-epubMargin {
-			if err := l.flushPage(); err != nil {
-				return err
-			}
-		}
-		l.y += height
-		l.lines = append(l.lines, epubLine{text: string(line), y: l.y, heading: heading})
-		line = nil
-		advance = 0
-		return nil
-	}
-	for _, word := range words {
-		// ponytail: bundled Go fonts cover unshaped text; add shaping and fonts before expanding scripts.
-		for _, r := range word {
-			if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Cf, r) || unicode.IsControl(r) || unicode.IsLetter(r) && !unicode.In(r, unicode.Latin, unicode.Greek, unicode.Cyrillic) {
-				return fmt.Errorf("EPUB text needs unsupported glyph or shaping: U+%04X", r)
-			}
-			if _, ok := face.GlyphAdvance(r); !ok {
-				return fmt.Errorf("EPUB bundled font lacks glyph U+%04X", r)
-			}
-		}
-		wordWidth := font.MeasureString(face, word)
-		space, _ := face.GlyphAdvance(' ')
-		if len(line) > 0 && advance+space+wordWidth > width {
-			if err := emit(); err != nil {
-				return err
-			}
-		}
-		if len(line) > 0 {
-			line = append(line, ' ')
-			advance += space
-		}
-		for _, r := range word {
-			a, _ := face.GlyphAdvance(r)
-			kern := fixed.Int26_6(0)
-			if len(line) > 0 {
-				kern = face.Kern(line[len(line)-1], r)
-			}
-			if advance+kern+a > width {
-				if err := emit(); err != nil {
-					return err
-				}
-				kern = 0
-			}
-			line = append(line, r)
-			advance += kern + a
-		}
-	}
-	if err := emit(); err != nil {
-		return err
-	}
-	l.y += 18
 	return nil
 }
 func (l *epubLayout) addImage(e *epubPackage, name string, resources map[string]string) error {
@@ -255,17 +225,18 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	}
 	title := doc.child("head").child("title").allText()
 	first, firstChapter := len(l.book.pages), len(l.book.chaps)
-	var text strings.Builder
+	var text epubParagraph
 	heading := false
 	pendingChapter := -1
 	flush := func() error {
 		s := text.String()
-		text.Reset()
+		paragraph := text
+		text = epubParagraph{}
 		if heading && pendingChapter >= 0 && strings.TrimSpace(strings.ReplaceAll(s, "\u00ad", "")) != "" {
 			l.book.chaps[pendingChapter].Page = len(l.book.pages)
 			pendingChapter = -1
 		}
-		return l.text(s, heading)
+		return l.paragraph(paragraph, heading)
 	}
 	var walk func(*epubNode) error
 	walk = func(n *epubNode) error {
@@ -313,6 +284,10 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			return l.addImage(e, resolved, resources)
 		case "svg":
 			return l.svg(e, name, n, resources)
+		case "ruby":
+			return text.ruby(n)
+		case "rt", "rp", "rtc":
+			return fmt.Errorf("EPUB ruby annotation outside ruby: %s", n.name.Local)
 		default:
 			for _, c := range n.children {
 				if err := walk(c); err != nil {

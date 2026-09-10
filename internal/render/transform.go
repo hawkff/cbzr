@@ -1,6 +1,9 @@
 package render
 
-import "image"
+import (
+	"image"
+	"image/draw"
+)
 
 type subImager interface {
 	SubImage(image.Rectangle) image.Image
@@ -28,6 +31,19 @@ func Transform(img image.Image, rot int, zoom, cx, cy float64) image.Image {
 		for x := 0; x < r.Dx(); x++ {
 			dst.Set(x, y, img.At(r.Min.X+x, r.Min.Y+y))
 		}
+	}
+	return dst
+}
+
+// Invert returns a color-inverted copy, preserving alpha and image bounds.
+func Invert(src image.Image) *image.RGBA {
+	dst := image.NewRGBA(src.Bounds())
+	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
+	for i := 0; i < len(dst.Pix); i += 4 {
+		a := dst.Pix[i+3]
+		dst.Pix[i] = a - dst.Pix[i]
+		dst.Pix[i+1] = a - dst.Pix[i+1]
+		dst.Pix[i+2] = a - dst.Pix[i+2]
 	}
 	return dst
 }

@@ -56,6 +56,7 @@ type pane struct {
 	gen     int
 
 	rot       int // quarter turns cw
+	inverted  bool
 	zoom      float64
 	cx, cy    float64 // view center (fractions of rotated image)
 	webOffset float64 // vertical position in the current webtoon page
@@ -205,7 +206,7 @@ func (m Model) NativeRequested() bool { return m.nativeRequested }
 // NativeState returns the active pane's current reading state.
 func (m Model) NativeState() NativeState {
 	p := m.panes[m.active]
-	state := NativeState{Page: p.page, Offset: p.webOffset, Scroll: p.webScroll, Webtoon: m.webtoon, Rotation: p.rot, Zoom: p.zoom, CenterX: p.cx, CenterY: p.cy, Spread: m.spread}
+	state := NativeState{Page: p.page, Offset: p.webOffset, Scroll: p.webScroll, Webtoon: m.webtoon, Rotation: p.rot, Zoom: p.zoom, CenterX: p.cx, CenterY: p.cy, Spread: m.spread, Inverted: p.inverted}
 	if p.book != nil {
 		state.Path = p.book.Path
 	}
@@ -219,6 +220,7 @@ func (m Model) ApplyNativeState(state NativeState) Model {
 	p.webOffset = state.Offset
 	p.webScroll = state.Scroll
 	p.rot = state.Rotation
+	p.inverted = state.Inverted
 	p.zoom = state.Zoom
 	p.cx, p.cy = state.CenterX, state.CenterY
 	m.webtoon = state.Webtoon && !m.split
@@ -246,7 +248,7 @@ func (m Model) ClearProgress() error {
 	return m.progress.Save()
 }
 
-// SaveOnQuit reports whether the user requested a saved exit with Q.
+// SaveOnQuit reports whether Q selected a saved exit.
 func (m Model) SaveOnQuit() bool { return m.saveOnQuit }
 
 // SaveProgress writes each open book's current position.
@@ -608,6 +610,13 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	// -- view transforms --
+	case "i":
+		p := m.panes[m.active]
+		if p.book == nil {
+			return m, nil
+		}
+		p.inverted = !p.inverted
+		return m, m.renderPane(m.active)
 	case "R":
 		p := m.panes[m.active]
 		if p.book == nil {
@@ -1097,6 +1106,9 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/b/%d/?p=%d", port, m.active, p.page)
+	if p.inverted {
+		url += "&invert=1"
+	}
 	m.status = url
 	if m.openBrowser != nil {
 		if err := m.openBrowser(url); err != nil {
@@ -1170,12 +1182,16 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	b, page, rot, zoom, cx, cy := p.book, p.page, p.rot, p.zoom, p.cx, p.cy
+	inverted := p.inverted
 	return m, func() tea.Msg {
 		img, err := b.Page(page)
 		if err != nil {
 			return shotMsg{err: err}
 		}
 		img = render.Transform(img, rot, zoom, cx, cy)
+		if inverted && b.CanInvertPage(page) {
+			img = render.Invert(img)
+		}
 		dir := os.Getenv("CBZR_SHOT_DIR")
 		if dir == "" {
 			dir, _ = os.Getwd()
@@ -1362,6 +1378,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	p.loading = true
 	gen, page, b := p.gen, p.page, p.book
 	rot, zoom, cx, cy := p.rot, p.zoom, p.cx, p.cy
+	inverted := p.inverted
 	offset, scroll := p.webOffset, p.webScroll
 	if m.webtoon {
 		scroll = smoothWebtoonScroll(scroll)
@@ -1378,7 +1395,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			return nil, fmt.Errorf("EPUB text needs pixel rendering: %s", hint)
 		}
-		return b.Page(pg)
+		img, err := b.Page(pg)
+		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
+			img = render.Invert(img)
+		}
+		return img, err
 	}
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
@@ -1397,6 +1418,9 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			if err != nil {
 				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, err: err}
+			}
+			if !webtoon && inverted && b.CanInvertPage(pg) {
+				img = render.Invert(img)
 			}
 			res, err := r.Render(img, id, cols, rows)
 			return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, res: res, err: err}
@@ -1533,6 +1557,9 @@ func (m Model) paneLines(i int) []string {
 			title = "🔖 " + title
 		}
 		var mods []string
+		if p.inverted {
+			mods = append(mods, "inverted")
+		}
 		if p.rot != 0 {
 			mods = append(mods, fmt.Sprintf("%d°", p.rot*90))
 		}
@@ -1619,7 +1646,7 @@ func (m Model) statusView() string {
 	if m.status != "" {
 		left += "  ·  " + safeText(m.status)
 	}
-	right := "j/k page/scroll  v split  s spread  ? help  q clear+quit  Q save+quit "
+	right := "j/k page e in-browser s spread R rotate tab chapters  ? help  q quit "
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
 		return dim.Render(ansi.Truncate(left, m.width, "…"))
@@ -1645,6 +1672,7 @@ EPUB text: Kitty/Ghostty graphics, browser, or native macOS.
   F              bookmarks menu
   S              screenshot page → PNG (CBZR_SHOT_DIR or cwd)
   R              rotate 90° cw
+  i              toggle inversion (EPUB: text only; comics: whole page)
   + / -          zoom in / out
   0              reset zoom
   arrows         pan while zoomed

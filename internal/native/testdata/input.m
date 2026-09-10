@@ -3,11 +3,15 @@
 
 static int turns;
 static int webtoon;
+static int inverted;
 void *cbzr_go_native_render(uintptr_t handle, int width, int height, size_t *length, double *blockedScroll) { *length = 0; *blockedScroll = 0; return NULL; }
 int cbzr_go_native_is_webtoon(uintptr_t handle) { return webtoon; }
 void cbzr_go_native_scroll(uintptr_t handle, double pixels) {}
 void cbzr_go_native_turn(uintptr_t handle, int delta) { turns += delta; }
-void cbzr_go_native_event(uintptr_t handle, int event) { if (event == CBZREventToggleWebtoon) webtoon = !webtoon; }
+void cbzr_go_native_event(uintptr_t handle, int event) {
+ if (event == CBZREventToggleWebtoon) webtoon = !webtoon;
+ if (event == CBZREventToggleInversion) inverted = !inverted;
+}
 
 @interface WheelEvent : NSObject
 @end
@@ -25,6 +29,10 @@ static NSEvent *key(NSString *text) {
 int main(void) {
  @autoreleasepool {
   CBZRView *view = [[CBZRView alloc] initWithFrame:NSMakeRect(0, 0, 100, 80) handle:0];
+  [view keyDown:key(@"i")];
+  assert(inverted == 1);
+  [view keyDown:key(@"i")];
+  assert(inverted == 0);
   for (NSString *jump in @[@"g", @"G", @"t", @"R"]) {
    webtoon = 1;
    [view queueScroll:800];

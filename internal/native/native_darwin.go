@@ -43,10 +43,12 @@ const (
 	eventPanDown
 	eventPanLeft
 	eventPanRight
+	eventToggleInversion
 )
 
 type scaledPageKey struct {
 	page, width, rotation int
+	inverted              bool
 }
 
 type reader struct {
@@ -151,6 +153,9 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 		return nil, err
 	}
 	left = render.Transform(left, r.state.Rotation, r.state.Zoom, r.state.CenterX, r.state.CenterY)
+	if r.state.Inverted && r.book.CanInvertPage(r.state.Page) {
+		left = render.Invert(left)
+	}
 	if !r.state.Spread || r.state.Page+1 >= r.book.Len() {
 		return fit(left, width, height), nil
 	}
@@ -159,6 +164,9 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 		return nil, err
 	}
 	right = render.Transform(right, r.state.Rotation, r.state.Zoom, r.state.CenterX, r.state.CenterY)
+	if r.state.Inverted && r.book.CanInvertPage(r.state.Page+1) {
+		right = render.Invert(right)
+	}
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.Black, image.Point{}, draw.Src)
 	gap := min(8, max(2, width/300))
@@ -169,7 +177,7 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 }
 
 func (r *reader) scaledPage(page, width int) (image.Image, error) {
-	key := scaledPageKey{page: page, width: width, rotation: r.state.Rotation}
+	key := scaledPageKey{page: page, width: width, rotation: r.state.Rotation, inverted: r.state.Inverted && r.book.CanInvertPage(page)}
 	if img, ok := r.scaledPages[key]; ok {
 		return img, nil
 	}
@@ -179,6 +187,9 @@ func (r *reader) scaledPage(page, width int) (image.Image, error) {
 	}
 	img = render.Transform(img, r.state.Rotation, 1, 0.5, 0.5)
 	img = scaleToWidth(img, width)
+	if key.inverted {
+		img = render.Invert(img)
+	}
 	r.scaledPages[key] = img
 	r.scaledOrder = append(r.scaledOrder, key)
 	for len(r.scaledOrder) > 4 {
@@ -291,6 +302,8 @@ func cbzr_go_native_event(handle C.uintptr_t, event C.int) {
 		r.action = ActionSave
 	case eventReturn:
 		r.action = ActionReturn
+	case eventToggleInversion:
+		r.state.Inverted = !r.state.Inverted
 	case eventToggleWebtoon:
 		r.pendingScroll, r.state.Scroll = 0, 0
 		r.state.Webtoon = !r.state.Webtoon

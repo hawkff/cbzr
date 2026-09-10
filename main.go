@@ -8,12 +8,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"cbzr/internal/book"
 	"cbzr/internal/bookmarks"
 	"cbzr/internal/native"
 	"cbzr/internal/progress"
@@ -33,8 +35,9 @@ func main() {
 
 	backend := flag.String("renderer", "", "force renderer: kitty | halfblock (default: auto)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	check := flag.Bool("check", false, "check book indexing and text layout without opening a reader (images decode on page access)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: cbzr [flags] [book [book2]]\nformats: .cbz/.zip, .cbr/.rar, .epub\n\n")
+		fmt.Fprintf(os.Stderr, "usage: cbzr [flags] [book [book2]]\n       cbzr -check book [book ...]\nformats: .cbz/.zip, .cbr/.rar, .epub\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -44,6 +47,9 @@ func main() {
 	}
 
 	paths := flag.Args()
+	if *check {
+		os.Exit(checkBooks(paths, os.Stdout, os.Stderr))
+	}
 	if len(paths) > 2 {
 		fmt.Fprintln(os.Stderr, "cbzr: at most two books (split screen)")
 		os.Exit(2)
@@ -104,6 +110,30 @@ func main() {
 		closeBooks(fm)
 		return
 	}
+}
+
+func checkBooks(paths []string, stdout, stderr io.Writer) int {
+	if len(paths) == 0 {
+		fmt.Fprintln(stderr, "cbzr: -check needs at least one book path")
+		return 2
+	}
+	status := 0
+	for _, path := range paths {
+		b, err := book.Open(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "cbzr: check %q: %q\n", path, err.Error())
+			status = 1
+			continue
+		}
+		pages := b.Len()
+		if err := b.Close(); err != nil {
+			fmt.Fprintf(stderr, "cbzr: close %q: %q\n", path, err.Error())
+			status = 1
+			continue
+		}
+		fmt.Fprintf(stdout, "%q: OK (%d pages; indexing/text layout only, images not decoded)\n", path, pages)
+	}
+	return status
 }
 
 func finishTerminal(m ui.Model) {

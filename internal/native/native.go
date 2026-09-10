@@ -21,6 +21,7 @@ type State struct {
 	Zoom             float64
 	CenterX, CenterY float64
 	Spread           bool
+	Inverted         bool
 }
 
 // Result contains the final native-window state and requested exit action.
