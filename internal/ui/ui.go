@@ -1557,8 +1557,15 @@ func (m Model) paneLines(i int) []string {
 			title = "🔖 " + title
 		}
 		var mods []string
-		if p.inverted {
-			mods = append(mods, "inverted")
+		if chapters, err := p.book.Chapters(); err == nil {
+			for j := len(chapters) - 1; j >= 0; j-- {
+				if chapters[j].Page <= p.page {
+					if name := strings.TrimSpace(safeText(chapters[j].Title)); name != "" {
+						mods = append(mods, name)
+					}
+					break
+				}
+			}
 		}
 		if p.rot != 0 {
 			mods = append(mods, fmt.Sprintf("%d°", p.rot*90))

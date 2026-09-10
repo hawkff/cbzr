@@ -12,8 +12,7 @@ RUN LDFLAGS="-s -w -X main.version=${VERSION#v}" && \
     GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-darwin-arm64 . && \
     GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-darwin-amd64 . && \
     GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-linux-amd64 . && \
-    GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-linux-arm64 . && \
-    GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-windows-amd64.exe .
+    GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-linux-arm64 .
 
 FROM scratch
 COPY --from=build /out/ /
