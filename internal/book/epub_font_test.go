@@ -1,6 +1,7 @@
 package book
 
 import (
+	"bytes"
 	"encoding/binary"
 	"image"
 	"os"
@@ -9,54 +10,58 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
+	"github.com/go-text/typesetting/font"
 	"golang.org/x/image/font/gofont/goregular"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
 )
 
-func TestEPUBFallbackFace(t *testing.T) {
-	parsed, err := opentype.Parse(goregular.TTF)
+func TestEPUBFallbackShapedRaster(t *testing.T) {
+	fonts, err := parseEPUBFonts(goregular.TTF)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := newEPUBFace(parsed, nil, 32)
+	primary := *fonts[0]
+	primary.Cmap = epubMissingRuneCmap{Cmap: primary.Cmap, missing: 'Ω'}
+	l := &epubLayout{book: &Book{}, regular: []*font.Face{font.NewFace(&primary), font.NewFace(fonts[0])}, y: epubMargin}
+	if err := l.text("AΩA", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.flushPage(); err != nil {
+		t.Fatal(err)
+	}
+	page := l.book.pages[0].(epubTextPage)
+	runs := page.lines[0].runs
+	if len(runs) != 3 || runs[0].font != &primary || runs[1].font != fonts[0] || runs[2].font != &primary {
+		t.Fatalf("wrong fallback runs: %#v", runs)
+	}
+	for _, run := range runs {
+		if run.Face != nil {
+			t.Fatal("page retained mutable layout face")
+		}
+	}
+	before, _, err := l.book.PageBytes(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	face := &epubFallbackFace{Face: basicfont.Face7x13, fallbacks: []font.Face{basicfont.Face7x13, other}}
-	defer face.Close()
-	for _, tc := range []struct {
-		r    rune
-		want font.Face
-	}{{'A', basicfont.Face7x13}, {'Ω', other}} {
-		advance, ok := face.GlyphAdvance(tc.r)
-		wantAdvance, wantOK := tc.want.GlyphAdvance(tc.r)
-		if !ok || !wantOK || advance != wantAdvance {
-			t.Fatalf("advance for %U = %v, %v", tc.r, advance, ok)
-		}
-		bounds, _, ok := face.GlyphBounds(tc.r)
-		wantBounds, _, _ := tc.want.GlyphBounds(tc.r)
-		if !ok || bounds != wantBounds {
-			t.Fatalf("bounds for %U = %v, %v", tc.r, bounds, ok)
-		}
-		dot := fixed.P(40, 60)
-		wantRect, _, _, _, _ := tc.want.Glyph(dot, tc.r)
-		rect, mask, _, gotAdvance, ok := face.Glyph(dot, tc.r)
-		if !ok || mask == nil || rect.Empty() || rect != wantRect || gotAdvance != wantAdvance {
-			t.Fatalf("glyph for %U = %v, %v", tc.r, rect, ok)
-		}
+	l.regular = nil
+	after, _, err := l.book.PageBytes(0)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("raster depends on layout faces: %v", err)
 	}
-	if face.Kern('A', 'Ω') != 0 || face.Kern('Ω', 'A') != 0 || face.Kern('Ω', 'Ω') != other.Kern('Ω', 'Ω') {
-		t.Fatal("kerning crossed font boundaries")
+	if err := l.text("", false); err != nil {
+		t.Fatal(err)
 	}
-	if face.Metrics() != basicfont.Face7x13.Metrics() {
-		t.Fatal("fallback changed primary metrics")
+}
+
+type epubMissingRuneCmap struct {
+	font.Cmap
+	missing rune
+}
+
+func (c epubMissingRuneCmap) Lookup(r rune) (font.GID, bool) {
+	if r == c.missing {
+		return 0, false
 	}
-	if _, ok := face.GlyphAdvance('\U0010ffff'); ok {
-		t.Fatal("missing glyph reported as supported")
-	}
+	return c.Cmap.Lookup(r)
 }
 
 func TestConfiguredEPUBFallbackFont(t *testing.T) {
@@ -117,14 +122,15 @@ func TestEPUBFontCollection(t *testing.T) {
 			t.Fatalf("font collection: %d fonts, %v", len(fonts), err)
 		}
 		for _, f := range fonts {
-			face, err := newEPUBFace(f, nil, 32)
-			if err != nil {
+			l := &epubLayout{book: &Book{}, regular: []*font.Face{font.NewFace(f)}, y: epubMargin}
+			if err := l.text("A", false); err != nil {
 				t.Fatal(err)
 			}
-			rect, mask, _, _, ok := face.Glyph(fixed.P(40, 60), 'A')
-			face.Close()
-			if !ok || rect.Empty() || mask == nil {
-				t.Fatal("collection font did not rasterize")
+			if err := l.flushPage(); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := l.book.PageBytes(0); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
@@ -133,23 +139,6 @@ func TestEPUBFontCollection(t *testing.T) {
 func TestEPUBMacOSSymbolFallback(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS system font regression")
-	}
-	regular, bold, err := epubFaces()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer regular.Close()
-	defer bold.Close()
-	for _, face := range []font.Face{regular, bold} {
-		for _, r := range "◎『』「」" {
-			if _, ok := face.GlyphAdvance(r); !ok {
-				t.Fatalf("system fallback lacks %U", r)
-			}
-			rect, mask, _, _, ok := face.Glyph(fixed.P(40, 60), r)
-			if !ok || rect.Empty() || mask == nil {
-				t.Fatalf("system fallback did not rasterize %U", r)
-			}
-		}
 	}
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/text/z.xhtml", "First heading", "◎『First heading』")

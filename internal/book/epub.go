@@ -49,6 +49,9 @@ func (n *epubNode) allText() string {
 	var b strings.Builder
 	var walk func(*epubNode)
 	walk = func(n *epubNode) {
+		if n.name.Space == "http://www.w3.org/1999/xhtml" && (n.name.Local == "rt" || n.name.Local == "rp") {
+			return
+		}
 		b.WriteString(n.text)
 		for _, c := range n.children {
 			walk(c)
@@ -272,7 +275,6 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer layout.close()
 	linear := false
 	for _, ref := range opf.child("spine").children {
 		if ref.name.Local != "itemref" {

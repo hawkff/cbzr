@@ -1,17 +1,20 @@
 package book
 
 import (
-	"errors"
+	"bytes"
+	"encoding/binary"
 	"fmt"
-	"image"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"unicode"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
+	"github.com/go-text/typesetting/font"
+	"github.com/go-text/typesetting/font/opentype"
+	"github.com/go-text/typesetting/harfbuzz"
+	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/goregular"
 )
 
 const (
@@ -22,7 +25,7 @@ const (
 // Cache font data, not faces: each layout and rasterizer needs its own face.
 var epubFallbackFonts = sync.OnceValues(findEPUBFallbackFonts)
 
-func findEPUBFallbackFonts() ([]*opentype.Font, error) {
+func findEPUBFallbackFonts() ([]*font.Font, error) {
 	if path := os.Getenv("CBZR_EPUB_FALLBACK_FONT"); path != "" {
 		fonts, err := readEPUBFallbackFonts(path)
 		if err != nil {
@@ -61,7 +64,7 @@ func findEPUBFallbackFonts() ([]*opentype.Font, error) {
 			"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
 		}
 	}
-	var fonts []*opentype.Font
+	var fonts []*font.Font
 	for _, path := range paths {
 		if found, err := readEPUBFallbackFonts(path); err == nil {
 			fonts = append(fonts, found...)
@@ -70,7 +73,7 @@ func findEPUBFallbackFonts() ([]*opentype.Font, error) {
 	return fonts, nil
 }
 
-func readEPUBFallbackFonts(path string) ([]*opentype.Font, error) {
+func readEPUBFallbackFonts(path string) ([]*font.Font, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -80,17 +83,35 @@ func readEPUBFallbackFonts(path string) ([]*opentype.Font, error) {
 	if err != nil {
 		return nil, err
 	}
-	collection, err := opentype.ParseCollection(data)
+	return parseEPUBFonts(data)
+}
+
+func parseEPUBFonts(data []byte) ([]*font.Font, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("font must be TTF/OTF or TTC/OTC")
+	}
+	switch string(data[:4]) {
+	case "\x00\x01\x00\x00", "OTTO", "true", "typ1", "ttcf":
+	default:
+		return nil, fmt.Errorf("font must be TTF/OTF or TTC/OTC")
+	}
+	// Bound collection allocation before handing the file to the font parser.
+	if len(data) >= 12 && string(data[:4]) == "ttcf" {
+		count := binary.BigEndian.Uint32(data[8:12])
+		if count < 1 || count > maxEPUBFontFaces {
+			return nil, fmt.Errorf("font collection must contain 1 to %d faces", maxEPUBFontFaces)
+		}
+	}
+	loaders, err := opentype.NewLoaders(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
-	count := collection.NumFonts()
-	if count < 1 || count > maxEPUBFontFaces {
+	if len(loaders) < 1 || len(loaders) > maxEPUBFontFaces {
 		return nil, fmt.Errorf("font collection must contain 1 to %d faces", maxEPUBFontFaces)
 	}
-	fonts := make([]*opentype.Font, 0, count)
-	for i := 0; i < count; i++ {
-		f, err := collection.Font(i)
+	fonts := make([]*font.Font, 0, len(loaders))
+	for _, loader := range loaders {
+		f, err := font.NewFont(loader)
 		if err != nil {
 			return nil, err
 		}
@@ -99,65 +120,63 @@ func readEPUBFallbackFonts(path string) ([]*opentype.Font, error) {
 	return fonts, nil
 }
 
-func newEPUBFace(primary *opentype.Font, fallbacks []*opentype.Font, size float64) (font.Face, error) {
-	opts := &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull}
-	face, err := opentype.NewFace(primary, opts)
-	if err != nil || len(fallbacks) == 0 {
-		return face, err
+var epubBundledFonts = sync.OnceValues(func() ([]*font.Font, error) {
+	regular, err := parseEPUBFonts(goregular.TTF)
+	if err != nil {
+		return nil, err
 	}
-	combined := &epubFallbackFace{Face: face}
-	for _, fallback := range fallbacks {
-		other, err := opentype.NewFace(fallback, opts)
-		if err != nil {
-			combined.Close()
-			return nil, err
+	bold, err := parseEPUBFonts(gobold.TTF)
+	if err != nil {
+		return nil, err
+	}
+	return []*font.Font{regular[0], bold[0]}, nil
+})
+
+func epubFaces() ([]*font.Face, []*font.Face, error) {
+	bundled, err := epubBundledFonts()
+	if err != nil {
+		return nil, nil, err
+	}
+	fallbacks, err := epubFallbackFonts()
+	if err != nil {
+		return nil, nil, err
+	}
+	regular := []*font.Face{font.NewFace(bundled[0])}
+	bold := []*font.Face{font.NewFace(bundled[1])}
+	for _, f := range fallbacks {
+		regular = append(regular, font.NewFace(f))
+		bold = append(bold, font.NewFace(f))
+	}
+	return regular, bold, nil
+}
+
+type epubFontMap struct {
+	faces    []*font.Face
+	resolved map[rune]*font.Face
+}
+
+// ResolveFace prefers the bundled font, then the first fallback with an outline.
+func (fonts epubFontMap) ResolveFace(r rune) *font.Face {
+	if face := fonts.resolved[r]; face != nil {
+		return face
+	}
+	for _, f := range fonts.faces {
+		if gid, ok := f.NominalGlyph(r); ok && gid != 0 {
+			if epubRuneOutline(f, gid, r) {
+				fonts.resolved[r] = f
+				return f
+			}
 		}
-		combined.fallbacks = append(combined.fallbacks, other)
 	}
-	return combined, nil
+	fonts.resolved[r] = fonts.faces[0]
+	return fonts.faces[0]
 }
 
-type epubFallbackFace struct {
-	font.Face
-	fallbacks []font.Face
+func epubRuneOutline(face *font.Face, glyph font.GID, r rune) bool {
+	outline, ok := face.GlyphDataOutline(glyph)
+	return ok && (len(outline.Segments) != 0 || epubInvisibleRune(r))
 }
 
-func (f *epubFallbackFace) faceFor(r rune) font.Face {
-	if _, ok := f.Face.GlyphAdvance(r); ok {
-		return f.Face
-	}
-	for _, fallback := range f.fallbacks {
-		if _, ok := fallback.GlyphAdvance(r); ok {
-			return fallback
-		}
-	}
-	return f.Face
-}
-
-func (f *epubFallbackFace) Glyph(dot fixed.Point26_6, r rune) (image.Rectangle, image.Image, image.Point, fixed.Int26_6, bool) {
-	return f.faceFor(r).Glyph(dot, r)
-}
-
-func (f *epubFallbackFace) GlyphBounds(r rune) (fixed.Rectangle26_6, fixed.Int26_6, bool) {
-	return f.faceFor(r).GlyphBounds(r)
-}
-
-func (f *epubFallbackFace) GlyphAdvance(r rune) (fixed.Int26_6, bool) {
-	return f.faceFor(r).GlyphAdvance(r)
-}
-
-func (f *epubFallbackFace) Kern(a, b rune) fixed.Int26_6 {
-	first, second := f.faceFor(a), f.faceFor(b)
-	if first != second {
-		return 0
-	}
-	return first.Kern(a, b)
-}
-
-func (f *epubFallbackFace) Close() error {
-	err := f.Face.Close()
-	for _, fallback := range f.fallbacks {
-		err = errors.Join(err, fallback.Close())
-	}
-	return err
+func epubInvisibleRune(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsControl(r) || harfbuzz.IsDefaultIgnorable(r)
 }

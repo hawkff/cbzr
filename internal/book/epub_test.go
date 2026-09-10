@@ -14,7 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -67,7 +66,7 @@ func textEPUBPage(t *testing.T, b *Book, i int) string {
 	}
 	var lines []string
 	for _, line := range p.lines {
-		lines = append(lines, line.text)
+		lines = append(lines, strings.TrimRight(line.text, " "))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -241,8 +240,6 @@ func TestOpenEPUBRejectsInvalidContent(t *testing.T) {
 		{"escaped image", "OPS/text/z.xhtml", `<body>`, `<body><img src="../../../p.png"/>`, "escapes"},
 		{"unlisted image", "OPS/text/z.xhtml", `<body>`, `<body><img src="panel.png"/>`, "not in manifest"},
 		{"svg drawing", "OPS/text/z.xhtml", `<body>`, `<body><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>`, "SVG drawing"},
-		{"shaping", "OPS/text/z.xhtml", `Hello`, `مرحبا`, "unsupported glyph or shaping"},
-		{"missing glyph", "OPS/text/z.xhtml", `Hello`, `漢字`, "unsupported glyph or shaping"},
 		{"XML base", "OPS/text/z.xhtml", `<body>`, `<body xml:base="../">`, "xml:base"},
 		{"all auxiliary", "OPS/book.opf", `<itemref idref="first"/>`, `<itemref idref="first" linear="no"/>`, "linear content"},
 		{"wrong namespace", "OPS/book.opf", `http://www.idpf.org/2007/opf`, `urn:wrong`, "namespace"},
@@ -327,7 +324,6 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.close()
 	if err := l.text("\U0010ffff", false); err == nil || !strings.Contains(err.Error(), "lacks glyph") {
 		t.Fatalf("missing font glyph: %v", err)
 	}
@@ -350,7 +346,7 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 			if line.y > epubPageHeight-epubMargin || len(line.text) == 0 {
 				t.Fatal("invalid text line")
 			}
-			if font.MeasureString(l.regular, line.text) > fixed.I(epubPageWidth-2*epubMargin) {
+			if epubLineWidth(line) > fixed.I(epubPageWidth-2*epubMargin) {
 				t.Fatal("long word failed to wrap")
 			}
 			actual.WriteString(strings.ReplaceAll(line.text, " ", ""))
@@ -407,7 +403,6 @@ func TestEPUBLazyImagesAndDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.close()
 	resources := map[string]string{"panel": "image/png"}
 	for range 2 {
 		if err := l.addImage(e, "panel", resources); err != nil {
