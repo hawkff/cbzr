@@ -579,7 +579,7 @@ func testEPUBPath(t *testing.T) string {
 	return path
 }
 
-func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
+func TestEPUBHalfblockShowsText(t *testing.T) {
 	path := testEPUBPath(t)
 	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, true, []string{path})
 	if m.panes[0].book == nil {
@@ -597,42 +597,44 @@ func TestEPUBHalfblockGuidanceKeepsBookOpen(t *testing.T) {
 		t.Fatal("picker excludes EPUB")
 	}
 	msg := m.renderPane(0)().(renderedMsg)
-	if msg.err == nil || !strings.Contains(msg.err.Error(), "use e for browser, f for native") || m.panes[0].book == nil {
-		t.Fatalf("halfblock guidance: %v", msg.err)
+	if msg.err != nil || msg.res.Rows != 1 || strings.TrimSpace(msg.res.Lines[0]) != "Readable text." || len(msg.res.Transmit) != 0 {
+		t.Fatalf("halfblock text page: %v %#v", msg.err, msg.res)
 	}
-	if _, err := m.panes[0].book.Page(0); err != nil {
-		t.Fatalf("native/browser text unavailable: %v", err)
+	if m.prefetch(0, 0) != nil {
+		t.Fatal("halfblock prefetch rasterized a text page")
 	}
 	m.panes[0].page = 1
-	if msg := m.renderPane(0)().(renderedMsg); msg.err != nil {
+	if msg := m.renderPane(0)().(renderedMsg); msg.err != nil || !strings.Contains(msg.res.Lines[0], "▀") {
 		t.Fatalf("comic image blocked: %v", msg.err)
 	}
 	m.spread = true
-	for _, page := range []int{0, 1} {
-		for _, reverse := range []bool{false, true} {
-			m.panes[0].page = page
-			cmds := m.renderPane(0)().(tea.BatchMsg)
-			if len(cmds) != 2 {
-				t.Fatalf("spread commands = %d", len(cmds))
-			}
-			if reverse {
-				cmds[0], cmds[1] = cmds[1], cmds[0]
-			}
-			for _, cmd := range cmds {
-				updated, _ := m.Update(cmd())
-				m = updated.(Model)
-			}
-			view := m.View()
-			if !strings.Contains(view, "EPUB text needs pixel rendering") || !strings.Contains(view, "▀") {
-				t.Fatalf("spread page %d, reverse %v hid guidance or image: %q", page, reverse, view)
-			}
-		}
+	m.panes[0].page = 0
+	cmds := m.renderPane(0)().(tea.BatchMsg)
+	if len(cmds) != 2 {
+		t.Fatalf("spread commands = %d", len(cmds))
+	}
+	for _, cmd := range cmds {
+		updated, _ := m.Update(cmd())
+		m = updated.(Model)
+	}
+	if view := m.View(); !strings.Contains(view, "Readable text.") || !strings.Contains(view, "▀") {
+		t.Fatalf("spread hid text or image: %q", view)
 	}
 	m.spread = false
 	m.webtoon = true
-	m.panes[0].page = 0
-	if msg := m.renderPane(0)().(renderedMsg); msg.err == nil {
-		t.Fatal("webtoon silently used halfblock text")
+	if msg := m.renderPane(0)().(renderedMsg); msg.err == nil || !strings.Contains(msg.err.Error(), "webtoon") {
+		t.Fatalf("webtoon silently used halfblock text: %v", msg.err)
+	}
+}
+
+func TestTextResultWrapsAndPads(t *testing.T) {
+	res := textResult([]string{"one two three four", "漢字漢字漢字", "\x1b[31mred"}, 9, 10)
+	want := []string{"one two  ", "three    ", "four     ", "漢字漢字 ", "漢字     ", "red      "}
+	if res.Cols != 9 || res.Rows != len(want) || strings.Join(res.Lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("text rows: %#v", res.Lines)
+	}
+	if res := textResult([]string{"a", "b", "c"}, 80, 2); res.Rows != 2 || res.Cols != 72 || len(res.Lines[1]) != 72 {
+		t.Fatalf("row cap or width: %#v", res)
 	}
 }
 

@@ -652,7 +652,7 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.book == nil {
 			return m, nil
 		}
-		if !ocr.Available() {
+		if !ocr.Available() && !p.book.HasText() {
 			m.status = "OCR needs tesseract on PATH"
 			return m, nil
 		}
@@ -1250,6 +1250,10 @@ func (m Model) ocrPage(gen, page int) tea.Cmd {
 		return nil
 	}
 	b := p.book
+	if b.IsTextPage(page) {
+		text := strings.Join(b.PageText(page), "\n")
+		return func() tea.Msg { return ocrMsg{gen: gen, page: page, book: b, text: text} }
+	}
 	key := b.Path + "\x00" + strconv.Itoa(page)
 	if text, ok := m.ocrText[key]; ok {
 		return func() tea.Msg { return ocrMsg{gen: gen, page: page, book: b, text: text} }
@@ -1389,11 +1393,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	webtoon := m.webtoon
 	load := func(pg int) (image.Image, error) {
 		if r.Name() == "halfblock" && b.IsTextPage(pg) {
-			hint := "use e for browser or restart with -renderer=kitty in Kitty/Ghostty"
+			hint := "t to leave webtoon, e for browser, or -renderer=kitty in Kitty/Ghostty"
 			if m.nativeAvailable {
-				hint = "use e for browser, f for native, or -renderer=kitty in Kitty/Ghostty"
+				hint = "t to leave webtoon, e for browser, f for native, or -renderer=kitty in Kitty/Ghostty"
 			}
-			return nil, fmt.Errorf("EPUB text needs pixel rendering: %s", hint)
+			return nil, fmt.Errorf("EPUB text in webtoon needs pixel rendering: %s", hint)
 		}
 		img, err := b.Page(pg)
 		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
@@ -1404,6 +1408,10 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
 		return func() tea.Msg {
+			if !webtoon && r.Name() == "halfblock" && b.IsTextPage(pg) {
+				res := textResult(b.PageText(pg), cols, rows)
+				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: pg, cols: cols, rows: rows, scroll: scroll, res: res}
+			}
 			var img image.Image
 			var err error
 			outPage, outOffset := pg, 0.0
@@ -1436,9 +1444,27 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// textResult lays EPUB paragraphs out as terminal rows for renderers without
+// pixel graphics. Lines are capped at 72 cells for readability.
+func textResult(paragraphs []string, cols, rows int) render.Result {
+	width := max(1, min(cols, 72))
+	var lines []string
+	for _, paragraph := range paragraphs {
+		lines = append(lines, strings.Split(ansi.Wrap(safeText(paragraph), width, ""), "\n")...)
+	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	for i, line := range lines {
+		line = ansi.Truncate(line, width, "")
+		lines[i] = line + strings.Repeat(" ", width-ansi.StringWidth(line))
+	}
+	return render.Result{Cols: width, Rows: len(lines), Lines: lines}
+}
+
 func (m Model) prefetch(i, page int) tea.Cmd {
 	p := m.panes[i]
-	if p.book == nil || page >= p.book.Len() {
+	if p.book == nil || page >= p.book.Len() || m.renderer.Name() == "halfblock" && p.book.IsTextPage(page) {
 		return nil
 	}
 	b := p.book
@@ -1663,7 +1689,7 @@ func (m Model) statusView() string {
 
 func (m Model) helpView() string {
 	help := `cbzr: terminal reader (.cbz/.cbr/.epub)
-EPUB text: Kitty/Ghostty graphics, browser, or native macOS.
+EPUB text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Ghostty).
 
   j / k          next / prev page or spread (webtoon: one viewport; 2j for two)
   J / K          next / prev page or spread (webtoon: half a viewport)
@@ -1683,7 +1709,7 @@ EPUB text: Kitty/Ghostty graphics, browser, or native macOS.
   + / -          zoom in / out
   0              reset zoom
   arrows         pan while zoomed
-  /              OCR search (tesseract) · n / p next / prev hit
+  /              search: EPUB text, OCR (tesseract) for images · n / p next / prev hit
   o / O          open file in pane / in split
   x              close pane
   e              open current book in browser (127.0.0.1:5xxxx)

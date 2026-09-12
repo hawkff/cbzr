@@ -14,6 +14,8 @@ import (
 	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/harfbuzz"
 	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/gobolditalic"
+	"golang.org/x/image/font/gofont/goitalic"
 	"golang.org/x/image/font/gofont/goregular"
 )
 
@@ -120,34 +122,37 @@ func parseEPUBFonts(data []byte) ([]*font.Font, error) {
 	return fonts, nil
 }
 
+// Bundled styles in order: regular, bold, italic, bold italic.
 var epubBundledFonts = sync.OnceValues(func() ([]*font.Font, error) {
-	regular, err := parseEPUBFonts(goregular.TTF)
-	if err != nil {
-		return nil, err
+	var fonts []*font.Font
+	for _, data := range [][]byte{goregular.TTF, gobold.TTF, goitalic.TTF, gobolditalic.TTF} {
+		parsed, err := parseEPUBFonts(data)
+		if err != nil {
+			return nil, err
+		}
+		fonts = append(fonts, parsed[0])
 	}
-	bold, err := parseEPUBFonts(gobold.TTF)
-	if err != nil {
-		return nil, err
-	}
-	return []*font.Font{regular[0], bold[0]}, nil
+	return fonts, nil
 })
 
-func epubFaces() ([]*font.Face, []*font.Face, error) {
+// epubFaces returns one face list per bundled style, each followed by the fallbacks.
+func epubFaces() ([][]*font.Face, error) {
 	bundled, err := epubBundledFonts()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	fallbacks, err := epubFallbackFonts()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	regular := []*font.Face{font.NewFace(bundled[0])}
-	bold := []*font.Face{font.NewFace(bundled[1])}
-	for _, f := range fallbacks {
-		regular = append(regular, font.NewFace(f))
-		bold = append(bold, font.NewFace(f))
+	styles := make([][]*font.Face, len(bundled))
+	for i, f := range bundled {
+		styles[i] = []*font.Face{font.NewFace(f)}
+		for _, fallback := range fallbacks {
+			styles[i] = append(styles[i], font.NewFace(fallback))
+		}
 	}
-	return regular, bold, nil
+	return styles, nil
 }
 
 type epubFontMap struct {

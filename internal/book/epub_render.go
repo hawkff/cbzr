@@ -32,6 +32,7 @@ type epubRun struct {
 type epubLine struct {
 	text        string
 	y           int
+	end         bool // last line of its paragraph
 	runs        []epubRun
 	annotations []epubLine
 }
@@ -57,9 +58,6 @@ func (p epubTextPage) Open() (io.ReadCloser, error) {
 			for _, glyph := range run.Glyphs {
 				if glyph.GlyphID != font.EmptyGlyph {
 					outline, ok := face.GlyphDataOutline(glyph.GlyphID)
-					if !ok {
-						return fmt.Errorf("EPUB glyph %d has no rasterizable outline", glyph.GlyphID)
-					}
 					ox := x + float32(glyph.XOffset)/64
 					oy := float32(line.y) - float32(glyph.YOffset)/64
 					bounds := image.Rect(
@@ -68,7 +66,7 @@ func (p epubTextPage) Open() (io.ReadCloser, error) {
 						int(math.Ceil(float64(ox+float32(glyph.XBearing+glyph.Width)/64)))+1,
 						int(math.Ceil(float64(oy-float32(glyph.YBearing+glyph.Height)/64)))+1,
 					).Intersect(canvas.Bounds())
-					if len(outline.Segments) == 0 || bounds.Empty() {
+					if !ok || len(outline.Segments) == 0 || bounds.Empty() {
 						x += float32(glyph.Advance) / 64
 						continue
 					}
@@ -118,7 +116,7 @@ func (p epubTextPage) Open() (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(data.Bytes())), nil
 }
 
-// IsTextPage identifies EPUB text pages that need a pixel-capable renderer.
+// IsTextPage identifies EPUB text pages, which render as images or plain text.
 func (b *Book) IsTextPage(i int) bool {
 	if i < 0 || i >= len(b.pages) {
 		return false
@@ -127,22 +125,52 @@ func (b *Book) IsTextPage(i int) bool {
 	return ok
 }
 
+// HasText reports whether the book has EPUB text pages.
+func (b *Book) HasText() bool {
+	for i := range b.pages {
+		if b.IsTextPage(i) {
+			return true
+		}
+	}
+	return false
+}
+
+// PageText returns the paragraphs of an EPUB text page, nil for image pages.
+func (b *Book) PageText(i int) []string {
+	if !b.IsTextPage(i) {
+		return nil
+	}
+	var paragraphs []string
+	var current strings.Builder
+	for _, line := range b.pages[i].(epubTextPage).lines {
+		current.WriteString(line.text)
+		if line.end {
+			paragraphs = append(paragraphs, strings.TrimSpace(current.String()))
+			current.Reset()
+		}
+	}
+	if current.Len() > 0 {
+		paragraphs = append(paragraphs, strings.TrimSpace(current.String()))
+	}
+	return paragraphs
+}
+
 type epubLayout struct {
-	book          *Book
-	regular, bold []*font.Face
-	shaper        shaping.HarfbuzzShaper
-	segmenter     shaping.Segmenter
-	lines         []epubLine
-	y             int
-	activeImages  map[string]bool
+	book                              *Book
+	regular, bold, italic, boldItalic []*font.Face
+	shaper                            shaping.HarfbuzzShaper
+	segmenter                         shaping.Segmenter
+	lines                             []epubLine
+	y                                 int
+	activeImages                      map[string]bool
 }
 
 func newEPUBLayout(b *Book) (*epubLayout, error) {
-	r, h, err := epubFaces()
+	faces, err := epubFaces()
 	if err != nil {
 		return nil, err
 	}
-	return &epubLayout{book: b, regular: r, bold: h, y: epubMargin, activeImages: map[string]bool{}}, nil
+	return &epubLayout{book: b, regular: faces[0], bold: faces[1], italic: faces[2], boldItalic: faces[3], y: epubMargin, activeImages: map[string]bool{}}, nil
 }
 func (l *epubLayout) addPage(e entry) error {
 	if len(l.book.pages) >= maxEPUBPages {
@@ -227,21 +255,42 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	first, firstChapter := len(l.book.pages), len(l.book.chaps)
 	var text epubParagraph
 	heading := false
+	italic, bold, pre := 0, 0, 0
 	pendingChapter := -1
 	flush := func() error {
-		s := text.String()
 		paragraph := text
 		text = epubParagraph{}
-		if heading && pendingChapter >= 0 && strings.TrimSpace(strings.ReplaceAll(s, "\u00ad", "")) != "" {
-			l.book.chaps[pendingChapter].Page = len(l.book.pages)
-			pendingChapter = -1
+		chapter := -1
+		if heading && pendingChapter >= 0 && strings.TrimSpace(paragraph.String()) != "" {
+			chapter, pendingChapter = pendingChapter, -1
 		}
-		return l.paragraph(paragraph, heading)
+		if err := l.paragraph(paragraph, heading); err != nil {
+			return err
+		}
+		if chapter >= 0 {
+			// Layout may have moved the heading to a fresh page.
+			l.book.chaps[chapter].Page = len(l.book.pages)
+		}
+		return nil
 	}
 	var walk func(*epubNode) error
 	walk = func(n *epubNode) error {
 		if n.name.Local == "" {
-			text.WriteString(n.text)
+			lines := []string{n.text}
+			if pre > 0 {
+				lines = strings.Split(n.text, "\n")
+			}
+			for i, line := range lines {
+				if i > 0 {
+					if err := flush(); err != nil {
+						return err
+					}
+				}
+				if strings.TrimSpace(line) != "" {
+					text.style(italic > 0, bold > 0)
+				}
+				text.WriteString(line)
+			}
 			return nil
 		}
 		switch n.name.Local {
@@ -249,6 +298,15 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			return fmt.Errorf("unsupported EPUB element: %s", n.name.Local)
 		case "style":
 			return nil
+		case "i", "em", "cite", "dfn", "var":
+			italic++
+			defer func() { italic-- }()
+		case "b", "strong":
+			bold++
+			defer func() { bold-- }()
+		case "pre":
+			pre++
+			defer func() { pre-- }()
 		}
 		if n.name.Space != "http://www.w3.org/1999/xhtml" && n.name.Local != "svg" {
 			return fmt.Errorf("EPUB unsupported element namespace: %s", n.name.Space)
@@ -261,13 +319,19 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			}
 		}
 		if isHeading {
-			if err := l.flushPage(); err != nil {
-				return err
+			// Chapter headings start a page, as page-break-before does in most EPUB styles.
+			if n.name.Local[1] <= '2' {
+				if err := l.flushPage(); err != nil {
+					return err
+				}
 			}
 			if title := n.allText(); title != "" {
 				pendingChapter = len(l.book.chaps)
 				l.book.chaps = append(l.book.chaps, Chapter{Title: title, Page: len(l.book.pages)})
 			}
+		}
+		if n.name.Local == "li" {
+			text.WriteString("\u2022 ")
 		}
 		oldHeading := heading
 		heading = heading || isHeading

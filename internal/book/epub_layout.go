@@ -20,8 +20,20 @@ type epubRuby struct {
 }
 
 type epubParagraph struct {
-	runes  []rune
-	rubies []epubRuby
+	runes        []rune
+	rubies       []epubRuby
+	italic, bold bool // every text node so far carried the style
+	styled       bool
+}
+
+// style narrows the paragraph style to what all of its text shares.
+func (p *epubParagraph) style(italic, bold bool) {
+	if !p.styled {
+		p.italic, p.bold, p.styled = italic, bold, true
+		return
+	}
+	p.italic = p.italic && italic
+	p.bold = p.bold && bold
 }
 
 func (p *epubParagraph) WriteString(s string) {
@@ -110,49 +122,49 @@ func (l *epubLayout) text(text string, heading bool) error {
 	return l.paragraph(p, heading)
 }
 
-// shape delegates script, bidi, font runs and cluster formation to go-text.
-func (l *epubLayout) shape(text []rune, heading bool, size int) ([]shaping.Output, di.Direction, error) {
-	faces := l.regular
+// shape lays out body or heading text with the regular or bold faces.
+func (l *epubLayout) shape(text []rune, heading bool, size int) ([]shaping.Output, di.Direction) {
 	if heading {
-		faces = l.bold
+		return l.shapeWith(text, l.bold, size)
 	}
+	return l.shapeWith(text, l.regular, size)
+}
+
+// shapeWith delegates script, bidi, font runs and cluster formation to go-text.
+// A rune no face covers keeps the notdef glyph instead of failing the book.
+func (l *epubLayout) shapeWith(text []rune, faces []*font.Face, size int) ([]shaping.Output, di.Direction) {
 	inputs := l.segmenter.Split(shaping.Input{Text: text, RunEnd: len(text), Size: fixed.I(size)}, epubFontMap{faces: faces, resolved: map[rune]*font.Face{}})
 	inputs = epubClusterFaces(inputs, text, faces)
 	outputs := make([]shaping.Output, 0, len(inputs))
 	for _, input := range inputs {
 		output := l.shaper.Shape(input)
-		if err := epubShapedGlyphs(output, text); err != nil {
-			original := err
+		if !epubFaceCovers(output, text) {
 			for _, face := range faces {
 				if face == input.Face {
 					continue
 				}
 				alternate := input
 				alternate.Face = face
-				candidate := l.shaper.Shape(alternate)
-				if epubShapedGlyphs(candidate, text) == nil {
+				if candidate := l.shaper.Shape(alternate); epubFaceCovers(candidate, text) {
 					output = candidate
-					err = nil
 					break
 				}
-			}
-			if err != nil {
-				return nil, 0, original
 			}
 		}
 		outputs = append(outputs, output)
 	}
-	return outputs, outputs[0].Direction, nil
+	return outputs, outputs[0].Direction
 }
 
-func epubShapedGlyphs(output shaping.Output, text []rune) error {
+// epubFaceCovers reports whether every visible glyph in output has an outline.
+func epubFaceCovers(output shaping.Output, text []rune) bool {
 	outlines := map[font.GID]font.GlyphOutline{}
 	for _, glyph := range output.Glyphs {
 		if glyph.GlyphID == font.EmptyGlyph {
 			continue
 		}
 		if glyph.GlyphID == 0 {
-			return fmt.Errorf("EPUB font lacks glyph or usable outline for U+%04X; set CBZR_EPUB_FALLBACK_FONT to an outline font containing it", text[glyph.TextIndex()])
+			return false
 		}
 		outline, cached := outlines[glyph.GlyphID]
 		ok := true
@@ -169,10 +181,10 @@ func epubShapedGlyphs(output shaping.Output, text []rune) error {
 			}
 		}
 		if !ok || len(outline.Segments) == 0 && !invisible {
-			return fmt.Errorf("EPUB shaped glyph for U+%04X has no outline; set CBZR_EPUB_FALLBACK_FONT to an outline font containing it", text[glyph.TextIndex()])
+			return false
 		}
 	}
-	return nil
+	return true
 }
 
 // Keep a grapheme on one face when font segmentation splits its combining marks.
@@ -287,10 +299,16 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 	if heading {
 		size, leading = 40, 8
 	}
-	outputs, direction, err := l.shape(p.runes, heading, size)
-	if err != nil {
-		return err
+	faces := l.regular
+	switch {
+	case (heading || p.bold) && p.italic && len(l.boldItalic) > 0:
+		faces = l.boldItalic
+	case (heading || p.bold) && len(l.bold) > 0:
+		faces = l.bold
+	case p.italic && len(l.italic) > 0:
+		faces = l.italic
 	}
+	outputs, direction := l.shapeWith(p.runes, faces, size)
 	var wrapper shaping.LineWrapper
 	wrapper.Prepare(shaping.WrapConfig{Direction: direction}, p.runes, shaping.NewSliceIterator(outputs))
 	start, rubyIndex := 0, 0
@@ -352,16 +370,14 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 		l.lines = append(l.lines, line)
 		start = wrapped.NextLine
 	}
+	l.lines[len(l.lines)-1].end = true
 	l.y += 18
 	return nil
 }
 
 func (l *epubLayout) annotation(text string, left, right fixed.Int26_6, heading bool) ([]epubLine, int, error) {
 	runes := []rune(text)
-	outputs, direction, err := l.shape(runes, heading, 16)
-	if err != nil {
-		return nil, 0, err
-	}
+	outputs, direction := l.shape(runes, heading, 16)
 	var wrapper shaping.LineWrapper
 	wrapper.Prepare(shaping.WrapConfig{Direction: direction}, runes, shaping.NewSliceIterator(outputs))
 	var lines []epubLine

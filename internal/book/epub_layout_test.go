@@ -34,10 +34,7 @@ func TestEPUBUnicodeWrapping(t *testing.T) {
 	} {
 		t.Run(text, func(t *testing.T) {
 			runes := []rune(text)
-			outputs, direction, err := l.shape(runes, false, 32)
-			if err != nil {
-				t.Fatal(err)
-			}
+			outputs, direction := l.shape(runes, false, 32)
 			var wrapper shaping.LineWrapper
 			wrapper.Prepare(shaping.WrapConfig{Direction: direction}, runes, shaping.NewSliceIterator(outputs))
 			var seg segmenter.Segmenter
@@ -65,10 +62,7 @@ func TestEPUBUnicodeWrapping(t *testing.T) {
 			}
 		})
 	}
-	outputs, _, err := l.shape([]rune("ABC \u202eDEF\u202c GHI"), false, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
+	outputs, _ := l.shape([]rune("ABC \u202eDEF\u202c GHI"), false, 32)
 	rtl := false
 	for _, run := range outputs {
 		if run.Direction == di.DirectionRTL {
@@ -175,10 +169,7 @@ func TestEPUBSystemCJKCombiningAndArabic(t *testing.T) {
 					t.Skipf("requires an installed font for U+%04X", r)
 				}
 			}
-			outputs, _, err := l.shape([]rune(text), false, 32)
-			if err != nil {
-				t.Fatal(err)
-			}
+			outputs, _ := l.shape([]rune(text), false, 32)
 			if len(outputs) == 0 {
 				t.Fatal("empty shaped output")
 			}
@@ -295,10 +286,7 @@ func TestEPUBCombiningClusterFallback(t *testing.T) {
 	primary := *l.regular[0].Font
 	primary.Cmap = epubMissingRuneCmap{Cmap: primary.Cmap, missing: '\u0301'}
 	l.regular = []*font.Face{font.NewFace(&primary), font.NewFace(&fallback)}
-	outputs, _, err := l.shape([]rune("q\u0301q"), false, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
+	outputs, _ := l.shape([]rune("q\u0301q"), false, 32)
 	if len(outputs) != 2 || outputs[0].Runes.Count != 2 || outputs[0].Face.Font != &fallback || outputs[1].Face.Font != &primary {
 		t.Fatalf("combining cluster split across fonts: %#v", outputs)
 	}
@@ -318,17 +306,14 @@ func TestEPUBEmptyOutlineFallback(t *testing.T) {
 	}
 	primary.Cmap = epubSyntheticCmap{Cmap: primary.Cmap, glyphs: map[rune]font.GID{'A': space}}
 	fallback := l.regular[0]
-	l.regular = []*font.Face{font.NewFace(&primary)}
-	if _, _, err := l.shape([]rune("A"), false, 32); err == nil || !strings.Contains(err.Error(), "outline") {
-		t.Fatalf("invisible letter accepted: %v", err)
-	}
-	if _, _, err := l.shape([]rune(" "), false, 32); err != nil {
-		t.Fatalf("legitimate empty outline: %v", err)
+	broken := font.NewFace(&primary)
+	l.regular = []*font.Face{broken}
+	if output, _ := l.shape([]rune("A"), false, 32); output[0].Face != broken {
+		t.Fatal("invisible letter without an alternative changed face")
 	}
 	l.regular = append(l.regular, fallback)
-	output, _, err := l.shape([]rune("A"), false, 32)
-	if err != nil || output[0].Face != fallback {
-		t.Fatalf("outline fallback: %v", err)
+	if output, _ := l.shape([]rune("A"), false, 32); output[0].Face != fallback {
+		t.Fatal("outline fallback")
 	}
 }
 

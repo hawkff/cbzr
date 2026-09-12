@@ -23,9 +23,6 @@ func checkFixture(t *testing.T, name string) string {
 	entries := map[string]string{"page.png": "image intentionally decoded only on page access"}
 	if strings.HasSuffix(name, ".epub") {
 		text := "Text layout"
-		if name == "missing-glyph.epub" {
-			text = "&#x10FFFF;"
-		}
 		entries = map[string]string{
 			"META-INF/container.xml": `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
 			"book.opf":               `<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="text" href="text.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="text"/></spine></package>`,
@@ -53,7 +50,6 @@ func checkFixture(t *testing.T, name string) string {
 func TestCheckBooksBatch(t *testing.T) {
 	good := checkFixture(t, "book.cbz")
 	epub := checkFixture(t, "book.epub")
-	missingGlyph := checkFixture(t, "missing-glyph.epub")
 	bad := filepath.Join(t.TempDir(), "missing\n\x1b[31m.epub")
 	var out, diagnostics bytes.Buffer
 	if status := checkBooks([]string{good, bad, good}, &out, &diagnostics); status != 1 {
@@ -69,10 +65,6 @@ func TestCheckBooksBatch(t *testing.T) {
 	diagnostics.Reset()
 	if status := checkBooks([]string{good, epub, good}, &out, &diagnostics); status != 0 || diagnostics.Len() != 0 {
 		t.Fatalf("valid batch: status=%d, %q", status, diagnostics.String())
-	}
-	diagnostics.Reset()
-	if status := checkBooks([]string{missingGlyph, epub}, &out, &diagnostics); status != 1 || !strings.Contains(diagnostics.String(), "lacks glyph") {
-		t.Fatalf("text layout was not checked: %d, %q", status, diagnostics.String())
 	}
 	if status := checkBooks(nil, &out, &diagnostics); status != 2 {
 		t.Fatalf("empty batch status = %d", status)
