@@ -984,19 +984,29 @@ func (m Model) pan(key string) (tea.Model, tea.Cmd) {
 	if p.book == nil {
 		return m, nil
 	}
-	if m.renderer.Name() == "halfblock" && !m.webtoon && p.book.IsTextPage(p.page) {
+	if m.renderer.Name() == "halfblock" && !m.webtoon {
+		// Plain-text pages scroll; in a spread the longer page sets the range.
 		cols, rows := m.imgBox(m.active)
-		total := len(textLines(p.book.PageText(p.page), textWidth(cols)))
-		step := max(1, rows/2)
-		switch key {
-		case "up":
-			p.textTop = max(0, p.textTop-step)
-		case "down":
-			p.textTop = max(0, min(p.textTop+step, total-rows))
-		default:
-			return m, nil
+		pages := []int{p.page}
+		if m.spreadActive() {
+			pages = append(pages, p.page+1)
 		}
-		return m, m.renderPane(m.active)
+		total := 0
+		for _, pg := range pages {
+			total = max(total, len(textLines(p.book.PageText(pg), textWidth(cols))))
+		}
+		if total > 0 {
+			step := max(1, rows/2)
+			switch key {
+			case "up":
+				p.textTop = max(0, p.textTop-step)
+			case "down":
+				p.textTop = max(0, min(p.textTop+step, total-rows))
+			default:
+				return m, nil
+			}
+			return m, m.renderPane(m.active)
+		}
 	}
 	if p.zoom <= 1.001 {
 		return m, nil

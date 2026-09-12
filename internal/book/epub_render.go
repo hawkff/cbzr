@@ -273,6 +273,12 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	heading := false
 	italic, bold, pre := 0, 0, 0
 	bullet := false
+	marker := func() {
+		if bullet {
+			text.WriteString("\u2022 ")
+			bullet = false
+		}
+	}
 	pendingChapter := -1
 	flush := func() error {
 		paragraph := text
@@ -307,10 +313,7 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 					line = epubPreLine(line, i > 0 && i < len(lines)-1)
 				}
 				if strings.TrimSpace(line) != "" {
-					if bullet {
-						text.WriteString("\u2022 ")
-						bullet = false
-					}
+					marker()
 					text.style(italic > 0, bold > 0)
 				}
 				text.WriteString(line)
@@ -375,6 +378,7 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 		case "svg":
 			return l.svg(e, name, n, resources)
 		case "ruby":
+			marker()
 			return text.ruby(n)
 		case "rt", "rp", "rtc":
 			return fmt.Errorf("EPUB ruby annotation outside ruby: %s", n.name.Local)

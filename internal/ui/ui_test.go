@@ -642,6 +642,15 @@ func TestEPUBHalfblockShowsText(t *testing.T) {
 	if view := m.View(); !strings.Contains(view, "Readable text.") || !strings.Contains(view, "▀") {
 		t.Fatalf("spread hid text or image: %q", view)
 	}
+	m.height = 5
+	m.panes[0].page = 1 // image on the left, overflowing text on the right
+	updated, _ = m.pan("down")
+	m = updated.(Model)
+	if m.panes[0].textTop != 1 {
+		t.Fatalf("spread scroll from the right page: top=%d", m.panes[0].textTop)
+	}
+	m.height = 30
+	m.panes[0].page = 0
 	m.spread = false
 	m.webtoon = true
 	if msg := m.renderPane(0)().(renderedMsg); msg.err == nil || !strings.Contains(msg.err.Error(), "webtoon") {
