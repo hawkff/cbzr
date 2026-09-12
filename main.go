@@ -27,27 +27,60 @@ import (
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+const usage = `cbzr reads CBZ/CBR comics and EPUB books in the terminal.
+
+usage:
+  cbzr [flags] [book [book2]]   one book, or two side by side
+  cbzr -c book [book ...]       check books and exit
+  cbzr                          start empty; press o to open a file
+
+formats: .cbz/.zip, .cbr/.rar, .epub (the container is detected by signature)
+
+flags:
+  -r, -renderer kitty|halfblock   force a renderer (default: detect)
+  -c, -check                      index books and lay out EPUB text without
+                                  opening a reader; images decode on page access
+  -v, -version                    print the version and exit
+  -h, -help                       print this help and exit
+
+environment:
+  CBZR_SHOT_DIR             where S saves screenshots (default: current dir)
+  CBZR_OCR_LANG             tesseract language for / search (default: eng)
+  CBZR_EPUB_FALLBACK_FONT   TTF/OTF/TTC with glyphs the bundled fonts lack;
+                            replaces the system font search
+
+EPUB text renders as page images in Kitty, Ghostty and tmux 3.3+ with
+passthrough, and as plain text in other terminals (webtoon mode needs the
+kitty renderer). e opens the browser reader, f the native macOS window.
+
+Positions and bookmarks live in the user config dir (~/.config/cbzr on
+Linux, ~/Library/Application Support/cbzr on macOS). Press ? in the reader
+for the key list.
+`
+
 func main() {
 	if runtime.GOOS == "darwin" {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 	}
 
-	backend := flag.String("renderer", "", "force renderer: kitty | halfblock (default: auto)")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	check := flag.Bool("check", false, "check book indexing and text layout without opening a reader (images decode on page access)")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: cbzr [flags] [book [book2]]\n       cbzr -check book [book ...]\nformats: .cbz/.zip, .cbr/.rar, .epub\n\n")
-		flag.PrintDefaults()
-	}
+	var backend string
+	var showVersion, check bool
+	flag.StringVar(&backend, "renderer", "", "")
+	flag.StringVar(&backend, "r", "", "")
+	flag.BoolVar(&showVersion, "version", false, "")
+	flag.BoolVar(&showVersion, "v", false, "")
+	flag.BoolVar(&check, "check", false, "")
+	flag.BoolVar(&check, "c", false, "")
+	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	flag.Parse()
-	if *showVersion {
+	if showVersion {
 		fmt.Println("cbzr", version)
 		return
 	}
 
 	paths := flag.Args()
-	if *check {
+	if check {
 		os.Exit(checkBooks(paths, os.Stdout, os.Stderr))
 	}
 	if len(paths) > 2 {
@@ -56,7 +89,7 @@ func main() {
 	}
 
 	render.QueryCellSize() // must run before bubbletea owns the tty
-	r := render.Detect(*backend)
+	r := render.Detect(backend)
 	srv := new(server.Server)
 	defer srv.Close() //nolint:errcheck
 

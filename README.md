@@ -14,6 +14,11 @@ Read CBZ/CBR comics and EPUB books in your terminal.
   file signature, so an archive still opens when its extension is wrong.
 - cbzr sorts comic archive images in natural order (`p2` before `p10`).
   For EPUBs, it follows the package spine and document order.
+- cbzr lays EPUB text out into fixed pages with the bundled Go fonts
+  (regular, bold, italic) and system fonts for other scripts. Set
+  `CBZR_EPUB_FALLBACK_FONT` to a TTF/OTF/TTC to replace the system font
+  search. `h1` and `h2` headings start a page; lists, `pre` blocks and ruby
+  readings keep their shape.
 - cbzr decodes JPEG, PNG, GIF, WebP, and BMP page images.
 - cbzr limits decompressed page data to 64 MiB and image dimensions to
   32 million pixels. ComicInfo.xml must fit within 1 MiB.
@@ -29,7 +34,9 @@ cbzr probes the terminal and chooses a rendering backend.
   terminal. It uses XTWINOPS replies for cell dimensions on Unix.
 - `halfblock`: uses U+2580 with truecolor foreground and background pixels.
   Each cell displays two vertical pixels. Use this backend in a 24-bit color
-  terminal with U+2580 support.
+  terminal with U+2580 support. EPUB text pages appear as plain text in this
+  backend, and arrow keys scroll a page that overflows the pane; webtoon mode
+  needs `kitty`.
 
 ## Keybindings
 
@@ -53,8 +60,8 @@ cbzr probes the terminal and chooses a rendering backend.
 | `R` | rotate 90° cw |
 | `i` | toggle inversion in the active pane |
 | `+` / `-` / `0` | zoom in / out / reset |
-| arrows | pan while zoomed |
-| `/` | OCR search via tesseract (`CBZR_OCR_LANG`, default `eng`) |
+| arrows | pan while zoomed; scroll a plain-text EPUB page that overflows the pane |
+| `/` | search: EPUB page text directly, OCR via tesseract for images (`CBZR_OCR_LANG`, default `eng`) |
 | `n` / `p` | next / prev search hit |
 | `o` / `O` | open file in pane / in split |
 | `x` | close pane |
@@ -64,9 +71,11 @@ cbzr probes the terminal and chooses a rendering backend.
 | `q` / `ctrl+c` | clear saved positions for open books and quit |
 | `Q` | save positions for open books and quit |
 
-OCR search scans pages in the background and caches results; `n`/`p` jump
-between hits and wrap. Opening another book, toggling split with `v`, enabling
-split with `O`, closing a pane, or entering the native reader cancels the search.
+Search reads EPUB text pages directly and OCRs image pages in the background,
+caching results; `n`/`p` jump between hits and wrap. The final status counts
+pages it could not read, such as image pages without tesseract. Opening another book,
+toggling split with `v`, enabling split with `O`, closing a pane, or entering
+the native reader cancels the search.
 
 ## Web reader
 
@@ -74,3 +83,27 @@ split with `O`, closing a pane, or entering the native reader cancels the search
 59999, then opens the current book and page. The browser lists its keybindings
 in the header. It opens with
 the active terminal pane's inversion setting. The index at `/` lists open books.
+
+## Yazi integration
+
+Add cbzr as an opener in `~/.config/yazi/yazi.toml`. Open one file to read
+it, or select two for a split. `block = true` hands the terminal to cbzr
+until you quit.
+
+```toml
+[opener]
+cbzr = [
+  { run = 'cbzr %s', block = true, desc = "Read in cbzr" },
+]
+
+[open]
+prepend_rules = [
+  { url = "*.{cbz,cbr,epub}", use = "cbzr" },
+  { mime = "application/epub+zip", use = "cbzr" },
+  { mime = "application/vnd.comicbook+zip", use = "cbzr" },
+  { mime = "application/vnd.comicbook-rar", use = "cbzr" },
+]
+```
+
+`url` globs match case-insensitively, so `*.CBZ` is covered. To keep the
+default openers in the "open with" menu, use `use = ["cbzr", "open"]`.

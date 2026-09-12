@@ -324,9 +324,6 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.text("\U0010ffff", false); err == nil || !strings.Contains(err.Error(), "lacks glyph") {
-		t.Fatalf("missing font glyph: %v", err)
-	}
 	text := strings.Repeat("word ", 1200) + strings.Repeat("X", 100)
 	if err := l.text(text, false); err != nil {
 		t.Fatal(err)
@@ -354,6 +351,15 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 	}
 	if actual.String() != strings.ReplaceAll(text, " ", "") {
 		t.Fatal("pagination lost text")
+	}
+	if err := l.text("\U0010ffff", false); err != nil {
+		t.Fatalf("missing glyph must render as notdef: %v", err)
+	}
+	if err := l.flushPage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.PageBytes(b.Len() - 1); err != nil {
+		t.Fatalf("notdef page raster: %v", err)
 	}
 	l.book.pages = make([]entry, maxEPUBPages)
 	if err := l.addPage(epubTextPage{}); err == nil {
@@ -498,6 +504,44 @@ func TestEPUBHeadingTargetsFirstTextPage(t *testing.T) {
 				t.Fatal("heading image order changed")
 			}
 		})
+	}
+}
+
+func TestEPUBBodyStylesListsAndPre(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("wrap ", 30)) + " end"
+	entries := epubFixture()
+	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", "<p><i>Thought</i></p><h3>Sub</h3><ul><li>one</li><li><p>two</p></li><li><ruby>three<rt>san</rt></ruby></li></ul><pre>\nline one\n\tindented\n\nline two\n</pre><p><b>Loud</b></p><p>"+long+"</p>")
+	b, err := Open(writeEPUB(t, entries, ".epub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if b.Len() != 2 {
+		t.Fatalf("h3 or lists changed pagination: %d pages", b.Len())
+	}
+	want := []string{"First heading", "Hello reader & friends.", "Thought", "Sub", "\u2022 one", "\u2022 two", "\u2022 three", "line one", "\u00a0\u00a0\u00a0\u00a0indented", "\u00a0", "line two", "Loud", long}
+	if got := b.PageText(0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("paragraphs: %#v", got)
+	}
+	if !b.HasText() || b.PageText(-1) != nil || !reflect.DeepEqual(b.PageText(1), []string{"Last note."}) {
+		t.Fatal("page text lookup")
+	}
+	chapters, err := b.Chapters()
+	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"First heading", 0}, {"Sub", 0}, {"Notes", 1}}) {
+		t.Fatalf("chapters: %#v, %v", chapters, err)
+	}
+	bundled, err := epubBundledFonts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := b.pages[0].(epubTextPage).lines
+	for i, style := range map[int]int{0: 1, 1: 0, 2: 2, 11: 1} {
+		if lines[i].runs[0].font != bundled[style] {
+			t.Fatalf("line %d %q uses the wrong style", i, lines[i].text)
+		}
+	}
+	if _, _, err := b.PageBytes(0); err != nil {
+		t.Fatal(err)
 	}
 }
 
