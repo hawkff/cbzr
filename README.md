@@ -35,7 +35,8 @@ cbzr probes the terminal and chooses a rendering backend.
 - `halfblock`: uses U+2580 with truecolor foreground and background pixels.
   Each cell displays two vertical pixels. Use this backend in a 24-bit color
   terminal with U+2580 support. EPUB text pages appear as plain text in this
-  backend; webtoon mode needs `kitty`.
+  backend, and arrow keys scroll a page that overflows the pane; webtoon mode
+  needs `kitty`.
 
 ## Keybindings
 
@@ -59,7 +60,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `R` | rotate 90° cw |
 | `i` | toggle inversion in the active pane |
 | `+` / `-` / `0` | zoom in / out / reset |
-| arrows | pan while zoomed |
+| arrows | pan while zoomed; scroll a plain-text EPUB page that overflows the pane |
 | `/` | search: EPUB page text directly, OCR via tesseract for images (`CBZR_OCR_LANG`, default `eng`) |
 | `n` / `p` | next / prev search hit |
 | `o` / `O` | open file in pane / in split |
@@ -71,7 +72,8 @@ cbzr probes the terminal and chooses a rendering backend.
 | `Q` | save positions for open books and quit |
 
 Search reads EPUB text pages directly and OCRs image pages in the background,
-caching results; `n`/`p` jump between hits and wrap. Opening another book,
+caching results; `n`/`p` jump between hits and wrap. The final status counts
+pages it could not read, such as image pages without tesseract. Opening another book,
 toggling split with `v`, enabling split with `O`, closing a pane, or entering
 the native reader cancels the search.
 

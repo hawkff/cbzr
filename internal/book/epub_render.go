@@ -145,14 +145,30 @@ func (b *Book) PageText(i int) []string {
 	for _, line := range b.pages[i].(epubTextPage).lines {
 		current.WriteString(line.text)
 		if line.end {
-			paragraphs = append(paragraphs, strings.TrimSpace(current.String()))
+			paragraphs = append(paragraphs, strings.Trim(current.String(), " "))
 			current.Reset()
 		}
 	}
 	if current.Len() > 0 {
-		paragraphs = append(paragraphs, strings.TrimSpace(current.String()))
+		paragraphs = append(paragraphs, strings.Trim(current.String(), " "))
 	}
 	return paragraphs
+}
+
+// epubIndent keeps pre indentation as no-break spaces, which the paragraph
+// writer and the fonts preserve.
+var epubIndent = strings.NewReplacer("\t", "\u00a0\u00a0\u00a0\u00a0", " ", "\u00a0")
+
+// epubPreLine prepares one line of a pre block; interior blank lines stay blank.
+func epubPreLine(line string, interior bool) string {
+	if strings.TrimSpace(line) == "" {
+		if interior {
+			return "\u00a0"
+		}
+		return ""
+	}
+	lead := len(line) - len(strings.TrimLeft(line, " \t"))
+	return epubIndent.Replace(line[:lead]) + line[lead:]
 }
 
 type epubLayout struct {
@@ -256,6 +272,7 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	var text epubParagraph
 	heading := false
 	italic, bold, pre := 0, 0, 0
+	bullet := false
 	pendingChapter := -1
 	flush := func() error {
 		paragraph := text
@@ -286,7 +303,14 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 						return err
 					}
 				}
+				if pre > 0 {
+					line = epubPreLine(line, i > 0 && i < len(lines)-1)
+				}
 				if strings.TrimSpace(line) != "" {
+					if bullet {
+						text.WriteString("\u2022 ")
+						bullet = false
+					}
 					text.style(italic > 0, bold > 0)
 				}
 				text.WriteString(line)
@@ -331,7 +355,9 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			}
 		}
 		if n.name.Local == "li" {
-			text.WriteString("\u2022 ")
+			// The bullet joins the item's first text, even inside a nested block.
+			bullet = true
+			defer func() { bullet = false }()
 		}
 		oldHeading := heading
 		heading = heading || isHeading

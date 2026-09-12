@@ -510,7 +510,7 @@ func TestEPUBHeadingTargetsFirstTextPage(t *testing.T) {
 func TestEPUBBodyStylesListsAndPre(t *testing.T) {
 	long := strings.TrimSpace(strings.Repeat("wrap ", 30)) + " end"
 	entries := epubFixture()
-	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", "<p><i>Thought</i></p><h3>Sub</h3><ul><li>one</li><li>two</li></ul><pre>line one\nline two</pre><p><b>Loud</b></p><p>"+long+"</p>")
+	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", "<p><i>Thought</i></p><h3>Sub</h3><ul><li>one</li><li><p>two</p></li></ul><pre>\nline one\n\tindented\n\nline two\n</pre><p><b>Loud</b></p><p>"+long+"</p>")
 	b, err := Open(writeEPUB(t, entries, ".epub"))
 	if err != nil {
 		t.Fatal(err)
@@ -519,7 +519,7 @@ func TestEPUBBodyStylesListsAndPre(t *testing.T) {
 	if b.Len() != 2 {
 		t.Fatalf("h3 or lists changed pagination: %d pages", b.Len())
 	}
-	want := []string{"First heading", "Hello reader & friends.", "Thought", "Sub", "\u2022 one", "\u2022 two", "line one", "line two", "Loud", long}
+	want := []string{"First heading", "Hello reader & friends.", "Thought", "Sub", "\u2022 one", "\u2022 two", "line one", "\u00a0\u00a0\u00a0\u00a0indented", "\u00a0", "line two", "Loud", long}
 	if got := b.PageText(0); !reflect.DeepEqual(got, want) {
 		t.Fatalf("paragraphs: %#v", got)
 	}
@@ -535,7 +535,7 @@ func TestEPUBBodyStylesListsAndPre(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := b.pages[0].(epubTextPage).lines
-	for i, style := range map[int]int{0: 1, 1: 0, 2: 2, 8: 1} {
+	for i, style := range map[int]int{0: 1, 1: 0, 2: 2, 10: 1} {
 		if lines[i].runs[0].font != bundled[style] {
 			t.Fatalf("line %d %q uses the wrong style", i, lines[i].text)
 		}
