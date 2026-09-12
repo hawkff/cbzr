@@ -74,3 +74,27 @@ split with `O`, closing a pane, or entering the native reader cancels the search
 59999, then opens the current book and page. The browser lists its keybindings
 in the header. It opens with
 the active terminal pane's inversion setting. The index at `/` lists open books.
+
+## Yazi integration
+
+Add cbzr as an opener in `~/.config/yazi/yazi.toml`. Open one file to read
+it, or select two for a split. `block = true` hands the terminal to cbzr
+until you quit.
+
+```toml
+[opener]
+cbzr = [
+  { run = 'cbzr %s', block = true, desc = "Read in cbzr" },
+]
+
+[open]
+prepend_rules = [
+  { url = "*.{cbz,cbr,epub}", use = "cbzr" },
+  { mime = "application/epub+zip", use = "cbzr" },
+  { mime = "application/vnd.comicbook+zip", use = "cbzr" },
+  { mime = "application/vnd.comicbook-rar", use = "cbzr" },
+]
+```
+
+`url` globs match case-insensitively, so `*.CBZ` is covered. To keep the
+default openers in the "open with" menu, use `use = ["cbzr", "open"]`.

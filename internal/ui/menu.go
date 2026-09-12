@@ -54,7 +54,7 @@ func fuzzyScore(query, s string) (int, bool) {
 	if qi < len(q) {
 		return 0, false
 	}
-	return (last - first - len(q) + 1)*4 + first, true
+	return (last-first-len(q)+1)*4 + first, true
 }
 
 func (mn *menu) applyFilter() {
