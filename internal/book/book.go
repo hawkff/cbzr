@@ -2,9 +2,11 @@ package book
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,14 +30,24 @@ func IsImagePath(p string) bool {
 	return imageExts[strings.ToLower(filepath.Ext(p))]
 }
 
-// Book holds image pages from a comic archive or an EPUB reading order.
+// imageMedia derives the media type the layout expects from a file name.
+func imageMedia(name string) string {
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
+	if ext == "jpg" {
+		ext = "jpeg"
+	}
+	return "image/" + ext
+}
+
+// Book holds image pages from a comic archive, a document reading order or
+// an external page renderer.
 type Book struct {
 	Path  string
 	Title string
 
 	arc   archive
 	pages []entry
-	epub  bool
+	text  bool // pages were laid out from text; only those pages invert
 
 	chapOnce sync.Once
 	chaps    []Chapter
@@ -44,6 +56,16 @@ type Book struct {
 	mu    sync.Mutex
 	cache map[int]image.Image // small LRU-ish cache
 	order []int
+
+	loading      map[int]chan struct{}
+	encoded      map[int]encodedPage
+	encodedOrder []int
+	encodedBytes int
+}
+
+type encodedPage struct {
+	data []byte
+	mime string
 }
 
 const (
@@ -53,24 +75,86 @@ const (
 	maxMetadataBytes = 1 << 20
 )
 
-// Open indexes comic images in natural order or EPUB content in spine order.
+func newBook(path string, text bool) *Book {
+	return &Book{Path: path, Title: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), text: text, cache: make(map[int]image.Image)}
+}
+
+// readHead returns the first KiB of a file for format sniffing, which is how
+// far a PDF header may sit behind leading junk.
+func readHead(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	head := make([]byte, 1024)
+	n, err := io.ReadFull(f, head)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, err
+	}
+	return head[:n], nil
+}
+
+// looksLikeXML reports a UTF-8 or UTF-16 document that opens with a tag.
+func looksLikeXML(head []byte) bool {
+	if bytes.HasPrefix(head, []byte("\xff\xfe")) || bytes.HasPrefix(head, []byte("\xfe\xff")) {
+		return true
+	}
+	text := bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
+	return bytes.HasPrefix(text, []byte("<"))
+}
+
+// Open detects the format by signature: PDF, DJVU and DOC go to external
+// tools, archives hold comics, EPUB, DOCX or a zipped FB2, and XML is FB2.
 func Open(path string) (*Book, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	arc, err := openArchive(path)
+	head, err := readHead(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
 	}
-	isEPUB := strings.EqualFold(filepath.Ext(path), ".epub")
+	switch {
+	case bytes.HasPrefix(head, []byte("%PDF-")):
+		return openRendered(path, false)
+	case bytes.HasPrefix(head, []byte("AT&TFORM")):
+		return openRendered(path, true)
+	case bytes.HasPrefix(head, []byte("\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")):
+		return openDOC(path)
+	}
+	arc, err := openArchive(path)
+	if errors.Is(err, errNotArchive) {
+		if looksLikeXML(head) {
+			b, xmlErr := openFB2File(path)
+			if xmlErr == nil || !bytes.Contains(head, []byte("%PDF-")) {
+				return b, xmlErr
+			}
+		}
+		// A shifted PDF signature must not override a valid archive or FB2.
+		if bytes.Contains(head, []byte("%PDF-")) {
+			return openRendered(path, false)
+		}
+		return nil, fmt.Errorf("%s: unsupported format", filepath.Base(path))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
+	}
+	container, docx := false, false
+	var fb2 entry
 	for _, e := range arc.Entries() {
-		if e.Name() == "META-INF/container.xml" {
-			isEPUB = true
-			break
+		switch name := e.Name(); {
+		case name == "META-INF/container.xml":
+			container = true
+		case name == "word/document.xml":
+			docx = true
+		case fb2 == nil && !hiddenEntry(name) && strings.EqualFold(filepath.Ext(name), ".fb2"):
+			fb2 = e
 		}
 	}
-	if isEPUB {
+	// The contents win over the extension: an EPUB container, then DOCX, then
+	// a zipped FB2. A bare .epub extension still demands an EPUB.
+	if container || !docx && fb2 == nil && strings.EqualFold(filepath.Ext(path), ".epub") {
 		if _, ok := arc.(*zipArchive); !ok {
 			arc.Close()
 			return nil, fmt.Errorf("EPUB requires a ZIP container")
@@ -80,6 +164,21 @@ func Open(path string) (*Book, error) {
 			arc.Close()
 		}
 		return b, err
+	}
+	if docx {
+		b, err := openDOCX(arc, path)
+		if err != nil {
+			arc.Close()
+		}
+		return b, err
+	}
+	if fb2 != nil {
+		defer arc.Close()
+		data, err := readEntry(fb2, maxDocumentBytes)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+		}
+		return openFB2(data, path)
 	}
 	var pages []entry
 	for _, e := range arc.Entries() {
@@ -118,15 +217,63 @@ func (b *Book) Close() error {
 // Len returns the number of pages.
 func (b *Book) Len() int { return len(b.pages) }
 
-// CanInvertPage excludes EPUB illustrations while allowing comic page inversion.
+// CanInvertPage allows comic and rendered page inversion but keeps the
+// illustrations of text books.
 func (b *Book) CanInvertPage(i int) bool {
-	return i >= 0 && i < len(b.pages) && (!b.epub || b.IsTextPage(i))
+	return i >= 0 && i < len(b.pages) && (!b.text || b.IsTextPage(i))
 }
 
-// PageBytes returns the raw encoded bytes of page i (for HTTP serving).
+// lockPage serializes one page's loads without blocking other pages.
+func (b *Book) lockPage(i int) func() {
+	for {
+		b.mu.Lock()
+		if done := b.loading[i]; done != nil {
+			b.mu.Unlock()
+			<-done
+			continue
+		}
+		if b.loading == nil {
+			b.loading = make(map[int]chan struct{})
+		}
+		done := make(chan struct{})
+		b.loading[i] = done
+		b.mu.Unlock()
+		return func() {
+			b.mu.Lock()
+			delete(b.loading, i)
+			close(done)
+			b.mu.Unlock()
+		}
+	}
+}
+
+// PageBytes returns a copy of the cached encoded bytes of page i (for HTTP serving).
 func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
+	}
+	b.mu.Lock()
+	cached, ok := b.encoded[i]
+	b.mu.Unlock()
+	if ok {
+		return bytes.Clone(cached.data), cached.mime, nil
+	}
+	unlock := b.lockPage(i)
+	defer unlock()
+	data, mime, err := b.pageBytes(i)
+	return bytes.Clone(data), mime, err
+}
+
+// pageBytes requires lockPage(i). The cache holds at most eight pages and maxPageBytes.
+func (b *Book) pageBytes(i int) ([]byte, string, error) {
+	if i < 0 || i >= len(b.pages) {
+		return nil, "", fmt.Errorf("page %d out of range", i)
+	}
+	b.mu.Lock()
+	cached, ok := b.encoded[i]
+	b.mu.Unlock()
+	if ok {
+		return cached.data, cached.mime, nil
 	}
 	e := b.pages[i]
 	r, err := e.Open()
@@ -145,7 +292,22 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if config.Width <= 0 || config.Height <= 0 || config.Width > maxPagePixels/config.Height {
 		return nil, "", fmt.Errorf("page %d exceeds %d decoded pixels", i+1, maxPagePixels)
 	}
-	return data, "image/" + format, nil
+	mime := "image/" + format
+	b.mu.Lock()
+	if b.encoded == nil {
+		b.encoded = make(map[int]encodedPage)
+	}
+	b.encoded[i] = encodedPage{data, mime}
+	b.encodedOrder = append(b.encodedOrder, i)
+	b.encodedBytes += len(data)
+	for len(b.encodedOrder) > cacheSize || b.encodedBytes > maxPageBytes {
+		evict := b.encodedOrder[0]
+		b.encodedOrder = b.encodedOrder[1:]
+		b.encodedBytes -= len(b.encoded[evict].data)
+		delete(b.encoded, evict)
+	}
+	b.mu.Unlock()
+	return data, mime, nil
 }
 
 // Page decodes page i, using a small in-memory cache.
@@ -160,7 +322,15 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 	b.mu.Unlock()
 
-	data, _, err := b.PageBytes(i)
+	unlock := b.lockPage(i)
+	defer unlock()
+	b.mu.Lock()
+	if img, ok := b.cache[i]; ok {
+		b.mu.Unlock()
+		return img, nil
+	}
+	b.mu.Unlock()
+	data, _, err := b.pageBytes(i)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +340,9 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 
 	b.mu.Lock()
+	if b.cache == nil {
+		b.cache = make(map[int]image.Image)
+	}
 	if _, ok := b.cache[i]; !ok {
 		b.cache[i] = img
 		b.order = append(b.order, i)
@@ -183,13 +356,25 @@ func (b *Book) Page(i int) (image.Image, error) {
 	return img, nil
 }
 
+func readEntry(e entry, limit int64) ([]byte, error) {
+	if e == nil {
+		return nil, errors.New("missing archive entry")
+	}
+	r, err := e.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return readBounded(r, limit)
+}
+
 func readBounded(r io.Reader, limit int64) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("archive entry exceeds %d bytes", limit)
+		return nil, fmt.Errorf("data exceeds %d bytes", limit)
 	}
 	return data, nil
 }

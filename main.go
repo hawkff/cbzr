@@ -1,4 +1,4 @@
-// cbzr is a terminal reader for .cbz, .cbr and .epub.
+// cbzr is a terminal reader for comic archives, EPUB, FB2, DOCX, DOC, PDF and DJVU.
 //
 //	cbzr one.cbz            read one book
 //	cbzr one.cbz two.cbr    split screen, two books side by side
@@ -27,19 +27,21 @@ import (
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `cbzr reads CBZ/CBR comics and EPUB books in the terminal.
+const usage = `cbzr reads comics and books in the terminal.
 
 usage:
   cbzr [flags] [book [book2]]   one book, or two side by side
   cbzr -c book [book ...]       check books and exit
   cbzr                          start empty; press o to open a file
 
-formats: .cbz/.zip, .cbr/.rar, .epub (the container is detected by signature)
+formats: .cbz/.zip, .cbr/.rar, .epub, .fb2/.fb2.zip, .docx (built in);
+         .pdf (poppler), .djvu (djvulibre), .doc (antiword);
+         the format is detected by signature
 
 flags:
   -r, -renderer kitty|halfblock   force a renderer (default: detect)
-  -c, -check                      index books and lay out EPUB text without
-                                  opening a reader; images decode on page access
+  -c, -check                      index books and lay out text without opening
+                                  a reader; images decode on page access
   -v, -version                    print the version and exit
   -h, -help                       print this help and exit
 
@@ -49,9 +51,10 @@ environment:
   CBZR_EPUB_FALLBACK_FONT   TTF/OTF/TTC with glyphs the bundled fonts lack;
                             replaces the system font search
 
-EPUB text renders as page images in Kitty, Ghostty and tmux 3.3+ with
-passthrough, and as plain text in other terminals (webtoon mode needs the
-kitty renderer). e opens the browser reader, f the native macOS window.
+EPUB, FB2, DOCX and DOC text renders as page images in Kitty, Ghostty and
+tmux 3.3+ with passthrough, and as plain text in other terminals (webtoon
+mode needs the kitty renderer). PDF and DJVU pages render through pdftoppm
+and ddjvu on access. e opens the browser reader, f the native macOS window.
 
 Positions and bookmarks live in the user config dir (~/.config/cbzr on
 Linux, ~/Library/Application Support/cbzr on macOS). Press ? in the reader

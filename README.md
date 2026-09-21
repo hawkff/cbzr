@@ -1,17 +1,21 @@
 # cbzr
 
-Read CBZ/CBR comics and EPUB books in your terminal.
+Read CBZ/CBR comics and EPUB, FB2, DOCX, DOC, PDF and DJVU books in your
+terminal.
 
 ## Building and dependencies
 
 - Go 1.26.4+ to build cbzr.
 - cgo and Xcode command-line tools for native macOS builds.
 - [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR search.
+- [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`) for PDF,
+  [DjVuLibre](https://djvu.sourceforge.net/) (`djvused`, `ddjvu`) for DJVU and
+  `antiword` for DOC. Comics, EPUB, FB2 and DOCX need no external tools.
 
 ## Formats
 
-- cbzr reads .cbz/.zip and .cbr/.rar archives. It detects the format from the
-  file signature, so an archive still opens when its extension is wrong.
+- cbzr reads .cbz/.zip and .cbr/.rar archives. It detects every format from
+  the file signature, so a file still opens when its extension is wrong.
 - cbzr sorts comic archive images in natural order (`p2` before `p10`).
   For EPUBs, it follows the package spine and document order.
 - cbzr lays EPUB text out into fixed pages with the bundled Go fonts
@@ -19,9 +23,19 @@ Read CBZ/CBR comics and EPUB books in your terminal.
   `CBZR_EPUB_FALLBACK_FONT` to a TTF/OTF/TTC to replace the system font
   search. `h1` and `h2` headings start a page; lists, `pre` blocks and ruby
   readings keep their shape.
+- cbzr lays FB2 (plain or zipped) out the same way. The cover comes first,
+  section titles start pages and fill the chapter menu, and note bodies
+  follow the main text. cbzr keeps emphasis and embedded images and reads
+  windows-1251 or koi8-r encodings.
+- cbzr keeps DOCX heading styles, bold and italic runs, list bullets, tables
+  as one paragraph per cell, and embedded pictures. It reads DOC through
+  antiword as plain paragraphs.
+- cbzr renders PDF and DJVU pages on access with `pdftoppm` and `ddjvu`,
+  scaled to fit 2000×2000 pixels. `-check` only counts their pages.
 - cbzr decodes JPEG, PNG, GIF, WebP, and BMP page images.
 - cbzr limits decompressed page data to 64 MiB and image dimensions to
-  32 million pixels. ComicInfo.xml must fit within 1 MiB.
+  32 million pixels. ComicInfo.xml must fit within 1 MiB; FB2 files and
+  DOCX documents within 32 MiB.
 
 ## Rendering
 
@@ -34,9 +48,9 @@ cbzr probes the terminal and chooses a rendering backend.
   terminal. It uses XTWINOPS replies for cell dimensions on Unix.
 - `halfblock`: uses U+2580 with truecolor foreground and background pixels.
   Each cell displays two vertical pixels. Use this backend in a 24-bit color
-  terminal with U+2580 support. EPUB text pages appear as plain text in this
-  backend, and arrow keys scroll a page that overflows the pane; webtoon mode
-  needs `kitty`.
+  terminal with U+2580 support. Text pages of EPUB, FB2, DOCX and DOC books
+  appear as plain text in this backend, and arrow keys scroll a page that
+  overflows the pane; webtoon mode needs `kitty`.
 
 ## Keybindings
 
@@ -51,17 +65,17 @@ cbzr probes the terminal and chooses a rendering backend.
 | `w` | switch pane |
 | `v` | toggle split (keeps active pane) |
 | `s` | two-page spread: pages N and N+1 side by side (single pane) |
-| `tab` | chapter menu (EPUB headings/titles, ComicInfo.xml bookmarks or archive folders) |
+| `tab` | chapter menu (EPUB, FB2 and DOCX headings, ComicInfo.xml bookmarks or archive folders) |
 | `b` | toggle bookmark on this page |
 | `F` | bookmarks menu (persisted in the user config dir) |
 | `/` in menus | fuzzy filter (subsequence match) |
 | `r` / `d` in bookmarks | rename / delete mark |
 | `S` | screenshot page to PNG (`CBZR_SHOT_DIR` or cwd) |
 | `R` | rotate 90° cw |
-| `i` | toggle inversion in the active pane |
+| `i` | toggle inversion in the active pane (text pages in books; whole pages in comics, PDF and DJVU) |
 | `+` / `-` / `0` | zoom in / out / reset |
-| arrows | pan while zoomed; scroll a plain-text EPUB page that overflows the pane |
-| `/` | search: EPUB page text directly, OCR via tesseract for images (`CBZR_OCR_LANG`, default `eng`) |
+| arrows | pan while zoomed; scroll a plain-text page that overflows the pane |
+| `/` | search: book text directly, OCR via tesseract for images (`CBZR_OCR_LANG`, default `eng`) |
 | `n` / `p` | next / prev search hit |
 | `o` / `O` | open file in pane / in split |
 | `x` | close pane |
@@ -71,7 +85,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `q` / `ctrl+c` | clear saved positions for open books and quit |
 | `Q` | save positions for open books and quit |
 
-Search reads EPUB text pages directly and OCRs image pages in the background,
+Search reads text pages directly and OCRs image pages in the background,
 caching results; `n`/`p` jump between hits and wrap. The final status counts
 pages it could not read, such as image pages without tesseract. Opening another book,
 toggling split with `v`, enabling split with `O`, closing a pane, or entering
@@ -98,7 +112,8 @@ cbzr = [
 
 [open]
 prepend_rules = [
-  { url = "*.{cbz,cbr,epub}", use = "cbzr" },
+  { url = "*.{cbz,cbr,epub,fb2,docx,doc,pdf,djvu,djv}", use = "cbzr" },
+  { url = "*.fb2.zip", use = "cbzr" },
   { mime = "application/epub+zip", use = "cbzr" },
   { mime = "application/vnd.comicbook+zip", use = "cbzr" },
   { mime = "application/vnd.comicbook-rar", use = "cbzr" },

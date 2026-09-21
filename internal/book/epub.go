@@ -10,6 +10,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/text/encoding/htmlindex"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 const (
@@ -62,9 +66,30 @@ func (n *epubNode) allText() string {
 }
 
 func parseEPUBXML(data []byte) (*epubNode, error) {
+	return parseXML(data, maxEPUBXMLTokens)
+}
+
+func parseXML(data []byte, maxTokens int) (*epubNode, error) {
+	// A byte order mark selects UTF-8 or UTF-16 up front; anything else passes
+	// through untouched for the declared charset below.
+	data, _, err := transform.Bytes(unicode.BOMOverride(transform.Nop), data)
+	if err != nil {
+		return nil, fmt.Errorf("XML: %w", err)
+	}
 	d := xml.NewDecoder(bytes.NewReader(data))
 	// EPUB 2 XHTML uses named HTML entities without an internal DTD.
 	d.Entity = xml.HTMLEntity
+	// FB2 files often declare windows-1251 or koi8-r.
+	d.CharsetReader = func(label string, r io.Reader) (io.Reader, error) {
+		if strings.HasPrefix(strings.ToLower(label), "utf-16") {
+			return r, nil // the byte order mark already selected the transcoding
+		}
+		enc, err := htmlindex.Get(label)
+		if err != nil {
+			return nil, err
+		}
+		return enc.NewDecoder().Reader(r), nil
+	}
 	root := &epubNode{}
 	stack := []*epubNode{root}
 	tokens := 0
@@ -74,21 +99,21 @@ func parseEPUBXML(data []byte) (*epubNode, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("EPUB XML: %w", err)
+			return nil, fmt.Errorf("XML: %w", err)
 		}
 		tokens++
-		if tokens > maxEPUBXMLTokens {
-			return nil, fmt.Errorf("EPUB XML exceeds %d tokens", maxEPUBXMLTokens)
+		if tokens > maxTokens {
+			return nil, fmt.Errorf("XML exceeds %d tokens", maxTokens)
 		}
 		parent := stack[len(stack)-1]
 		switch t := tok.(type) {
 		case xml.StartElement:
 			if len(stack) > maxEPUBXMLDepth {
-				return nil, fmt.Errorf("EPUB XML exceeds depth %d", maxEPUBXMLDepth)
+				return nil, fmt.Errorf("XML exceeds depth %d", maxEPUBXMLDepth)
 			}
 			for _, a := range t.Attr {
 				if a.Name.Space == "http://www.w3.org/XML/1998/namespace" && a.Name.Local == "base" {
-					return nil, fmt.Errorf("EPUB xml:base is unsupported")
+					return nil, fmt.Errorf("xml:base is unsupported")
 				}
 			}
 			n := &epubNode{name: t.Name, attrs: t.Attr}
@@ -99,19 +124,19 @@ func parseEPUBXML(data []byte) (*epubNode, error) {
 		case xml.CharData:
 			if len(stack) == 1 {
 				if strings.TrimSpace(string(t)) != "" {
-					return nil, fmt.Errorf("EPUB XML text outside root")
+					return nil, fmt.Errorf("XML text outside root")
 				}
 				continue
 			}
 			parent.children = append(parent.children, &epubNode{text: string(t)})
 		case xml.Directive:
 			if strings.Contains(string(t), "[") {
-				return nil, fmt.Errorf("EPUB XML internal DTD is unsupported")
+				return nil, fmt.Errorf("XML internal DTD is unsupported")
 			}
 		}
 	}
 	if len(stack) != 1 || len(root.children) != 1 {
-		return nil, fmt.Errorf("EPUB XML needs one complete root")
+		return nil, fmt.Errorf("XML needs one complete root")
 	}
 	return root.children[0], nil
 }
@@ -145,16 +170,10 @@ func (e *epubPackage) read(name string, limit int64) ([]byte, error) {
 	if e.encrypted[name] {
 		return nil, fmt.Errorf("EPUB required resource is encrypted: %s", name)
 	}
-	f := e.files[name]
-	if f == nil {
+	if e.files[name] == nil {
 		return nil, fmt.Errorf("EPUB missing resource: %s", name)
 	}
-	r, err := f.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return readBounded(r, limit)
+	return readEntry(e.files[name], limit)
 }
 func (e *epubPackage) document(name string, limit int64) (*epubNode, error) {
 	data, err := e.read(name, min(limit, int64(maxEPUBContentBytes-e.usedBytes)))
@@ -267,7 +286,7 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 		manifest[id] = epubItem{name, media}
 		resources[name] = media
 	}
-	b := &Book{Path: filename, Title: opf.child("metadata").child("title").allText(), arc: arc, epub: true, cache: make(map[int]image.Image)}
+	b := &Book{Path: filename, Title: opf.child("metadata").child("title").allText(), arc: arc, text: true, cache: make(map[int]image.Image)}
 	if b.Title == "" {
 		b.Title = strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
 	}

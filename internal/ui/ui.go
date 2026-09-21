@@ -62,7 +62,7 @@ type pane struct {
 	webOffset float64 // vertical position in the current webtoon page
 	webScroll float64 // pending webtoon scroll in terminal rows
 	webStep   float64 // scroll included in the in-flight frame
-	textTop   int     // rows scrolled on a plain-text EPUB page
+	textTop   int     // rows scrolled on a plain-text book page
 }
 
 func newPane() *pane { return &pane{zoom: 1, cx: 0.5, cy: 0.5} }
@@ -185,7 +185,7 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 	}
 
 	fp := filepicker.New()
-	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar", ".epub"}
+	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar", ".epub", ".fb2", ".docx", ".doc", ".pdf", ".djvu", ".djv"}
 	if wd, err := os.Getwd(); err == nil {
 		fp.CurrentDirectory = wd
 	}
@@ -1437,7 +1437,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			if m.nativeAvailable {
 				hint = "t to leave webtoon, e for browser, f for native, or -renderer=kitty in Kitty/Ghostty"
 			}
-			return nil, fmt.Errorf("EPUB text in webtoon needs pixel rendering: %s", hint)
+			return nil, fmt.Errorf("text pages in webtoon need pixel rendering: %s", hint)
 		}
 		img, err := b.Page(pg)
 		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
@@ -1495,7 +1495,7 @@ func textLines(paragraphs []string, width int) []string {
 	return lines
 }
 
-// textResult lays EPUB paragraphs out as terminal rows for renderers without
+// textResult lays book paragraphs out as terminal rows for renderers without
 // pixel graphics, starting top rows down. The last row notes any overflow.
 func textResult(paragraphs []string, top, cols, rows int) render.Result {
 	width := textWidth(cols)
@@ -1738,8 +1738,8 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	help := `cbzr: terminal reader (.cbz/.cbr/.epub)
-EPUB text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Ghostty).
+	help := `cbzr: terminal reader (.cbz/.cbr/.epub/.fb2/.docx/.doc/.pdf/.djvu)
+Book text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Ghostty).
 
   j / k          next / prev page or spread (webtoon: one viewport; 2j for two)
   J / K          next / prev page or spread (webtoon: half a viewport)
@@ -1750,16 +1750,16 @@ EPUB text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Gh
   w              switch pane
   v              toggle split          (keeps the active pane)
   s              toggle two-page spread (single pane)
-  tab            chapter menu          (EPUB headings/titles, ComicInfo.xml or folders)
+  tab            chapter menu          (book headings, ComicInfo.xml or folders)
   b              toggle bookmark on this page
   F              bookmarks menu
   S              screenshot page → PNG (CBZR_SHOT_DIR or cwd)
   R              rotate 90° cw
-  i              toggle inversion (EPUB: text only; comics: whole page)
+  i              toggle inversion (books: text pages; comics, PDF, DJVU: whole page)
   + / -          zoom in / out
   0              reset zoom
-  arrows         pan while zoomed · scroll plain-text EPUB pages
-  /              search: EPUB text, OCR (tesseract) for images · n / p next / prev hit
+  arrows         pan while zoomed · scroll plain-text pages
+  /              search: book text, OCR (tesseract) for images · n / p next / prev hit
   o / O          open file in pane / in split
   x              close pane
   e              open current book in browser (127.0.0.1:5xxxx)
