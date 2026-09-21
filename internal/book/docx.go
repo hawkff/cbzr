@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// docxDrop lists elements whose text must not render: field codes, tracked
-// deletions and moves, and the legacy half of AlternateContent.
-var docxDrop = map[string]bool{"instrText": true, "delText": true, "del": true, "moveFrom": true, "Fallback": true}
+// docxDrop lists elements whose text must not render: field codes and
+// tracked deletions and moves.
+var docxDrop = map[string]bool{"instrText": true, "delText": true, "del": true, "moveFrom": true}
 
 var docxElements = map[string]string{"body": "body", "p": "p", "tbl": "div", "tr": "tr", "tc": "td", "br": "br", "cr": "br"}
 
@@ -79,6 +79,13 @@ func docxNode(n *epubNode, styles, images map[string]string) *epubNode {
 	switch n.name.Local {
 	case "tab":
 		return &epubNode{text: " "}
+	case "AlternateContent":
+		// Render one branch: the first choice carries the same content as the
+		// fallback in richer markup, which the generic walk reads as well.
+		if choice := n.child("Choice"); choice.name.Local != "" {
+			return docxNode(choice, styles, images)
+		}
+		return docxNode(n.child("Fallback"), styles, images)
 	case "drawing", "pict":
 		name := images[docxEmbed(n)]
 		if name == "" {

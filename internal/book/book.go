@@ -69,19 +69,29 @@ func newBook(path string, text bool) *Book {
 	return &Book{Path: path, Title: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), text: text, cache: make(map[int]image.Image)}
 }
 
-// readHead returns the first bytes of a file for format sniffing.
+// readHead returns the first KiB of a file for format sniffing, which is how
+// far a PDF header may sit behind leading junk.
 func readHead(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	head := make([]byte, 16)
-	n, err := f.Read(head)
-	if err != nil && err != io.EOF {
+	head := make([]byte, 1024)
+	n, err := io.ReadFull(f, head)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return nil, err
 	}
 	return head[:n], nil
+}
+
+// looksLikeXML reports a UTF-8 or UTF-16 document that opens with a tag.
+func looksLikeXML(head []byte) bool {
+	if bytes.HasPrefix(head, []byte("\xff\xfe")) || bytes.HasPrefix(head, []byte("\xfe\xff")) {
+		return true
+	}
+	text := bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
+	return bytes.HasPrefix(text, []byte("<"))
 }
 
 // Open detects the format by signature: PDF, DJVU and DOC go to external
@@ -96,7 +106,7 @@ func Open(path string) (*Book, error) {
 		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
 	}
 	switch {
-	case bytes.HasPrefix(head, []byte("%PDF")):
+	case bytes.Contains(head, []byte("%PDF-")):
 		return openRendered(path, false)
 	case bytes.HasPrefix(head, []byte("AT&TFORM")):
 		return openRendered(path, true)
@@ -105,7 +115,7 @@ func Open(path string) (*Book, error) {
 	}
 	arc, err := openArchive(path)
 	if errors.Is(err, errNotArchive) {
-		if text := bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n"); bytes.HasPrefix(text, []byte("<")) {
+		if looksLikeXML(head) {
 			return openFB2File(path)
 		}
 		return nil, fmt.Errorf("%s: unsupported format", filepath.Base(path))
@@ -274,7 +284,7 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("archive entry exceeds %d bytes", limit)
+		return nil, fmt.Errorf("data exceeds %d bytes", limit)
 	}
 	return data, nil
 }

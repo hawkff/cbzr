@@ -23,17 +23,29 @@ const (
 	toolTimeout      = 2 * time.Minute
 )
 
-// runTool runs an external converter and returns its standard output.
+// runTool runs an external converter and returns its standard output, which
+// may not exceed maxPageBytes.
 func runTool(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out, diagnostics bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &diagnostics
-	if err := cmd.Run(); err != nil {
+	var diagnostics bytes.Buffer
+	cmd.Stderr = &diagnostics
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, fmt.Errorf("%s is not on PATH", name)
 		}
+		return nil, err
+	}
+	out, readErr := readBounded(stdout, maxPageBytes)
+	if readErr != nil {
+		cancel() // stop a writer that outgrew the limit before waiting for it
+	}
+	if err := cmd.Wait(); err != nil && readErr == nil {
 		msg := strings.TrimSpace(diagnostics.String())
 		if msg == "" {
 			msg = err.Error()
@@ -43,7 +55,10 @@ func runTool(name string, args ...string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("%s: %s", name, msg)
 	}
-	return out.Bytes(), nil
+	if readErr != nil {
+		return nil, fmt.Errorf("%s: %w", name, readErr)
+	}
+	return out, nil
 }
 
 // toolPage renders one PDF or DJVU page on access.

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/unicode"
 )
 
 func fb2Fixture(t *testing.T) string {
@@ -100,4 +101,21 @@ func TestOpenFB2PlainZippedAndLegacyEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkFB2(t, path, "Привет")
+
+	for _, tc := range []struct {
+		name  string
+		order unicode.Endianness
+		label string
+	}{{"wide-le.fb2", unicode.LittleEndian, "UTF-16"}, {"wide-be.fb2", unicode.BigEndian, "utf-16be"}} {
+		wide := strings.Replace(fb2Fixture(t), `encoding="utf-8"`, `encoding="`+tc.label+`"`, 1)
+		encoded, err := unicode.UTF16(tc.order, unicode.UseBOM).NewEncoder().Bytes([]byte(wide))
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, tc.name)
+		if err := os.WriteFile(path, encoded, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		checkFB2(t, path, "Hello")
+	}
 }

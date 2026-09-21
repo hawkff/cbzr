@@ -17,7 +17,8 @@ func docxFixture(t *testing.T) []memEntry {
 <w:p><w:r><w:rPr><w:i/></w:rPr><w:t>Italic</w:t></w:r></w:p>
 <w:p><w:r><w:drawing><a:blip r:embed="rId2"/></w:drawing></w:r></w:p>
 <w:p><w:r><w:drawing><a:blip r:embed="rId9"/></w:drawing></w:r><w:r><w:t>After</w:t></w:r></w:p>
-<w:p><w:r><mc:AlternateContent><mc:Choice><w:t>Choice</w:t></mc:Choice><mc:Fallback><w:t>Fallback</w:t></mc:Fallback></mc:AlternateContent></w:r></w:p>
+<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:t>Choice</w:t></mc:Choice><mc:Choice Requires="w14"><w:t>Twice</w:t></mc:Choice><mc:Fallback><w:t>Fallback</w:t></mc:Fallback></mc:AlternateContent></w:r></w:p>
+<w:p><w:r><mc:AlternateContent><mc:Fallback><w:t>Only fallback</w:t></mc:Fallback></mc:AlternateContent></w:r></w:p>
 <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
 <w:sectPr/></w:body></w:document>`)},
 		{"word/styles.xml", []byte(`<w:styles ` + w + `><w:style w:styleId="Ttulo1"><w:name w:val="heading 1"/></w:style><w:style w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`)},
@@ -45,7 +46,7 @@ func TestOpenDOCX(t *testing.T) {
 	if img, err := b.Page(1); err != nil || img.Bounds().Dx() != 3 {
 		t.Fatalf("picture: %v", err)
 	}
-	if got := b.PageText(2); !reflect.DeepEqual(got, []string{"After", "Choice", "Cell"}) {
+	if got := b.PageText(2); !reflect.DeepEqual(got, []string{"After", "Choice", "Only fallback", "Cell"}) {
 		t.Fatalf("last page: %#v", got)
 	}
 	chapters, err := b.Chapters()

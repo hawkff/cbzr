@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/text/encoding/htmlindex"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 const (
@@ -68,11 +70,20 @@ func parseEPUBXML(data []byte) (*epubNode, error) {
 }
 
 func parseXML(data []byte, maxTokens int) (*epubNode, error) {
-	d := xml.NewDecoder(bytes.NewReader(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))))
+	// A byte order mark selects UTF-8 or UTF-16 up front; anything else passes
+	// through untouched for the declared charset below.
+	data, _, err := transform.Bytes(unicode.BOMOverride(transform.Nop), data)
+	if err != nil {
+		return nil, fmt.Errorf("XML: %w", err)
+	}
+	d := xml.NewDecoder(bytes.NewReader(data))
 	// EPUB 2 XHTML uses named HTML entities without an internal DTD.
 	d.Entity = xml.HTMLEntity
 	// FB2 files often declare windows-1251 or koi8-r.
 	d.CharsetReader = func(label string, r io.Reader) (io.Reader, error) {
+		if strings.HasPrefix(strings.ToLower(label), "utf-16") {
+			return r, nil // the byte order mark already selected the transcoding
+		}
 		enc, err := htmlindex.Get(label)
 		if err != nil {
 			return nil, err

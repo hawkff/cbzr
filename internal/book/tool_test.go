@@ -48,10 +48,16 @@ func TestOpenPDF(t *testing.T) {
 	if err := os.WriteFile(path, []byte(pdf), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	shifted := filepath.Join(t.TempDir(), "shifted.pdf")
+	if err := os.WriteFile(shifted, append([]byte(strings.Repeat("junk\n", 100)), pdf...), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Run("missing tools", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "pdfinfo is not on PATH") {
-			t.Fatalf("missing pdfinfo: %v", err)
+		for _, name := range []string{path, shifted} {
+			if _, err := Open(name); err == nil || !strings.Contains(err.Error(), "pdfinfo is not on PATH") {
+				t.Fatalf("%s without pdfinfo: %v", filepath.Base(name), err)
+			}
 		}
 	})
 	requireTools(t, "pdfinfo", "pdftoppm")
