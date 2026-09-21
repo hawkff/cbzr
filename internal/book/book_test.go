@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type testArchive []entry
@@ -148,11 +149,15 @@ func TestOpenEmbeddedPDFMarker(t *testing.T) {
 
 type countedPage struct {
 	memEntry
-	opens atomic.Int32
+	opens            atomic.Int32
+	started, release chan struct{}
 }
 
 func (e *countedPage) Open() (io.ReadCloser, error) {
-	e.opens.Add(1)
+	if e.opens.Add(1) == 1 && e.started != nil {
+		close(e.started)
+		<-e.release
+	}
 	return e.memEntry.Open()
 }
 
@@ -206,15 +211,53 @@ func TestPageCacheSharesLoads(t *testing.T) {
 	}
 }
 
+func TestPageLoadsDoNotBlockOtherPages(t *testing.T) {
+	slow := &countedPage{
+		memEntry: memEntry{"slow.png", epubImage(t)},
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	b := newBook("book", false)
+	b.pages = []entry{slow, memEntry{"fast.png", epubImage(t)}}
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		close(slow.release)
+		wg.Wait()
+		if len(b.loading) != 0 {
+			t.Fatal("completed loads retained their coordination state")
+		}
+	})
+	wg.Go(func() {
+		if _, _, err := b.PageBytes(0); err != nil {
+			t.Error(err)
+		}
+	})
+	<-slow.started
+	finished := make(chan error, 1)
+	wg.Go(func() {
+		_, err := b.Page(1)
+		finished <- err
+	})
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unrelated page waited for the slow load")
+	}
+}
+
 func TestPageCacheByteLimit(t *testing.T) {
 	data := make([]byte, maxPageBytes/2+1)
 	copy(data, epubImage(t))
 	b := newBook("book", false)
 	b.pages = []entry{memEntry{"one.png", data}, memEntry{"two.png", data}}
-	b.loadMu.Lock()
-	defer b.loadMu.Unlock()
 	for i := range b.pages {
-		if _, _, err := b.pageBytes(i); err != nil {
+		unlock := b.lockPage(i)
+		_, _, err := b.pageBytes(i)
+		unlock()
+		if err != nil {
 			t.Fatal(err)
 		}
 	}

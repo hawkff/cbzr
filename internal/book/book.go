@@ -57,8 +57,7 @@ type Book struct {
 	cache map[int]image.Image // small LRU-ish cache
 	order []int
 
-	// ponytail: serialize cache misses per book; use per-page loads if prefetch delays navigation.
-	loadMu       sync.Mutex
+	loading      map[int]chan struct{}
 	encoded      map[int]encodedPage
 	encodedOrder []int
 	encodedBytes int
@@ -224,21 +223,48 @@ func (b *Book) CanInvertPage(i int) bool {
 	return i >= 0 && i < len(b.pages) && (!b.text || b.IsTextPage(i))
 }
 
+// lockPage serializes one page's loads without blocking other pages.
+func (b *Book) lockPage(i int) func() {
+	for {
+		b.mu.Lock()
+		if done := b.loading[i]; done != nil {
+			b.mu.Unlock()
+			<-done
+			continue
+		}
+		if b.loading == nil {
+			b.loading = make(map[int]chan struct{})
+		}
+		done := make(chan struct{})
+		b.loading[i] = done
+		b.mu.Unlock()
+		return func() {
+			b.mu.Lock()
+			delete(b.loading, i)
+			close(done)
+			b.mu.Unlock()
+		}
+	}
+}
+
 // PageBytes returns a copy of the cached encoded bytes of page i (for HTTP serving).
 func (b *Book) PageBytes(i int) ([]byte, string, error) {
+	if i < 0 || i >= len(b.pages) {
+		return nil, "", fmt.Errorf("page %d out of range", i)
+	}
 	b.mu.Lock()
 	cached, ok := b.encoded[i]
 	b.mu.Unlock()
 	if ok {
 		return bytes.Clone(cached.data), cached.mime, nil
 	}
-	b.loadMu.Lock()
-	defer b.loadMu.Unlock()
+	unlock := b.lockPage(i)
+	defer unlock()
 	data, mime, err := b.pageBytes(i)
 	return bytes.Clone(data), mime, err
 }
 
-// pageBytes requires loadMu; the encoded cache shares the page count and byte limits.
+// pageBytes requires lockPage(i). The cache holds at most eight pages and maxPageBytes.
 func (b *Book) pageBytes(i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
@@ -296,8 +322,8 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 	b.mu.Unlock()
 
-	b.loadMu.Lock()
-	defer b.loadMu.Unlock()
+	unlock := b.lockPage(i)
+	defer unlock()
 	b.mu.Lock()
 	if img, ok := b.cache[i]; ok {
 		b.mu.Unlock()
