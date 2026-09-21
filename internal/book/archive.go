@@ -2,13 +2,16 @@ package book
 
 import (
 	"archive/zip"
-	"fmt"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
 
 	rardecode "github.com/nwaples/rardecode/v2"
 )
+
+// errNotArchive lets Open try the single-file document formats.
+var errNotArchive = errors.New("not a zip or rar archive")
 
 // entry is one file inside an archive.
 type entry interface {
@@ -32,8 +35,8 @@ func openArchive(path string) (archive, error) {
 	if err == nil {
 		return a, nil
 	}
-	if err == rardecode.ErrNoSig {
-		return nil, fmt.Errorf("%s: not a zip or rar archive", filepath.Base(path))
+	if errors.Is(err, rardecode.ErrNoSig) {
+		return nil, errNotArchive
 	}
 	return nil, err
 }

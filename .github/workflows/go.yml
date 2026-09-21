@@ -28,6 +28,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install page renderers for the PDF, DJVU and DOC tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils djvulibre-bin antiword
       - name: Test
         run: go test ./...
       - name: Vet

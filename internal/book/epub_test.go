@@ -17,8 +17,8 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-func epubFixture() []testEntry {
-	return []testEntry{
+func epubFixture() []memEntry {
+	return []memEntry{
 		{"mimetype", []byte("application/epub+zip")},
 		{"META-INF/container.xml", []byte(`<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`)},
 		{"OPS/book.opf", []byte(`<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>A Text Book</dc:title></metadata><manifest><item id="last" href="text/a.xhtml" media-type="application/xhtml+xml"/><item id="first" href="text/z.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="first"/><itemref idref="last" linear="no"/></spine></package>`)},
@@ -26,7 +26,7 @@ func epubFixture() []testEntry {
 		{"OPS/text/z.xhtml", []byte(`<html xmlns="http://www.w3.org/1999/xhtml"><head><title>First document</title></head><body><h1>First heading</h1><p>Hello <em>reader</em> &amp; friends.</p><p>Second paragraph.</p></body></html>`)},
 	}
 }
-func writeEPUB(t *testing.T, entries []testEntry, ext string) string {
+func writeEPUB(t *testing.T, entries []memEntry, ext string) string {
 	t.Helper()
 	name := filepath.Join(t.TempDir(), "book"+ext)
 	f, err := os.Create(name)
@@ -51,7 +51,7 @@ func writeEPUB(t *testing.T, entries []testEntry, ext string) string {
 	}
 	return name
 }
-func replaceEPUB(entries []testEntry, name, old, replacement string) {
+func replaceEPUB(entries []memEntry, name, old, replacement string) {
 	for i := range entries {
 		if entries[i].name == name {
 			entries[i].data = []byte(strings.ReplaceAll(string(entries[i].data), old, replacement))
@@ -159,7 +159,7 @@ func TestOpenEPUBMixedImagesAndRelativeReferences(t *testing.T) {
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/book.opf", "</manifest>", `<item id="picture" href="images/panel%201" media-type="image/png"/></manifest>`)
 	replaceEPUB(entries, "OPS/text/z.xhtml", "<body>", `<body><p>Before<img src="../images/panel%201#view"/>After</p><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="../images/panel%201"/></svg>`)
-	entries = append(entries, testEntry{"OPS/images/panel 1", epubImage(t)}, testEntry{"unused.png", epubImage(t)})
+	entries = append(entries, memEntry{"OPS/images/panel 1", epubImage(t)}, memEntry{"unused.png", epubImage(t)})
 	b, err := Open(writeEPUB(t, entries, ".zip"))
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestOpenEPUBImageOnlySpine(t *testing.T) {
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/book.opf", `href="text/z.xhtml" media-type="application/xhtml+xml"`, `href="picture" media-type="image/png"`)
 	replaceEPUB(entries, "OPS/book.opf", `<itemref idref="last" linear="no"/>`, "")
-	entries = append(entries, testEntry{"OPS/picture", epubImage(t)})
+	entries = append(entries, memEntry{"OPS/picture", epubImage(t)})
 	b, err := Open(writeEPUB(t, entries, ".epub"))
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +260,7 @@ func TestOpenEPUBRejectsInvalidContent(t *testing.T) {
 	}
 	for _, name := range []string{"../escape", "/absolute", "OPS/../alias", "OPS\\bad"} {
 		t.Run(name, func(t *testing.T) {
-			entries := append(epubFixture(), testEntry{name, []byte("x")})
+			entries := append(epubFixture(), memEntry{name, []byte("x")})
 			if b, err := Open(writeEPUB(t, entries, ".epub")); err == nil {
 				b.Close()
 				t.Fatal("accepted unsafe ZIP entry")
@@ -272,7 +272,7 @@ func TestOpenEPUBRejectsInvalidContent(t *testing.T) {
 		b.Close()
 		t.Fatal("accepted duplicate ZIP entry")
 	}
-	if b, err := Open(writeEPUB(t, []testEntry{{"cover.png", epubImage(t)}}, ".epub")); err == nil {
+	if b, err := Open(writeEPUB(t, []memEntry{{"cover.png", epubImage(t)}}, ".epub")); err == nil {
 		b.Close()
 		t.Fatal("accepted missing container")
 	}
@@ -284,7 +284,7 @@ func TestEPUBEncryptionMetadata(t *testing.T) {
 		if required {
 			ref = "OPS/text/z.xhtml"
 		}
-		entries = append(entries, testEntry{"OPS/fonts/font.otf", []byte("obfuscated font")}, testEntry{"META-INF/encryption.xml", []byte(`<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#"><EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/><CipherData><CipherReference URI="` + ref + `"/></CipherData></EncryptedData></encryption>`)})
+		entries = append(entries, memEntry{"OPS/fonts/font.otf", []byte("obfuscated font")}, memEntry{"META-INF/encryption.xml", []byte(`<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#"><EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/><CipherData><CipherReference URI="` + ref + `"/></CipherData></EncryptedData></encryption>`)})
 		replaceEPUB(entries, "OPS/book.opf", "</manifest>", `<item id="font" href="fonts/font.otf" media-type="font/otf"/></manifest>`)
 		b, err := Open(writeEPUB(t, entries, ".epub"))
 		if required {
@@ -315,7 +315,7 @@ func TestEPUBBoundsAndPagination(t *testing.T) {
 		b.Close()
 		t.Fatal("accepted oversized metadata")
 	}
-	e := &epubPackage{files: map[string]entry{"x": testEntry{"x", []byte("<r/>")}}, usedBytes: maxEPUBContentBytes - 3}
+	e := &epubPackage{files: map[string]entry{"x": memEntry{"x", []byte("<r/>")}}, usedBytes: maxEPUBContentBytes - 3}
 	if _, err := e.document("x", maxMetadataBytes); err == nil {
 		t.Fatal("accepted aggregate content overflow")
 	}
@@ -379,7 +379,7 @@ func TestEPUBReferencedSVGWrapperAndCycle(t *testing.T) {
 		if cycle {
 			ref = "wrapper.svg"
 		}
-		entries = append(entries, testEntry{"OPS/images/wrapper.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><image href="` + ref + `"/></svg>`)}, testEntry{"OPS/images/panel.png", epubImage(t)})
+		entries = append(entries, memEntry{"OPS/images/wrapper.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><image href="` + ref + `"/></svg>`)}, memEntry{"OPS/images/panel.png", epubImage(t)})
 		b, err := Open(writeEPUB(t, entries, ".epub"))
 		if cycle {
 			if err == nil {
@@ -430,7 +430,7 @@ func TestEPUBLazyImagesAndDimensions(t *testing.T) {
 	if err := l.addImage(e, "panel", resources); err == nil || !strings.Contains(err.Error(), "unsupported image") {
 		t.Fatalf("unsupported raster media: %v", err)
 	}
-	e.files["corrupt"] = testEntry{"corrupt", []byte("not an image")}
+	e.files["corrupt"] = memEntry{"corrupt", []byte("not an image")}
 	resources["corrupt"] = "image/png"
 	if err := l.addImage(e, "corrupt", resources); err != nil {
 		t.Fatalf("corrupt image indexing: %v", err)
@@ -450,7 +450,7 @@ func TestEPUBLazyImagesAndDimensions(t *testing.T) {
 	binary.LittleEndian.PutUint32(huge[22:], 50000)
 	binary.LittleEndian.PutUint16(huge[26:], 1)
 	binary.LittleEndian.PutUint16(huge[28:], 24)
-	e.files["huge.bmp"] = testEntry{"huge.bmp", huge}
+	e.files["huge.bmp"] = memEntry{"huge.bmp", huge}
 	resources["huge.bmp"] = "image/bmp"
 	if err := l.addImage(e, "huge.bmp", resources); err != nil {
 		t.Fatalf("oversized image indexing: %v", err)
@@ -480,7 +480,7 @@ func TestEPUBHeadingTargetsFirstTextPage(t *testing.T) {
 			replaceEPUB(entries, "OPS/book.opf", "</manifest>", `<item id="panel" href="images/panel" media-type="image/png"/></manifest>`)
 			replaceEPUB(entries, "OPS/text/z.xhtml", `<h1>First heading</h1>`, "<h1>"+tc.heading+"</h1>"+img)
 			replaceEPUB(entries, "OPS/text/z.xhtml", "</body>", "<h2>Next heading</h2></body>")
-			entries = append(entries, testEntry{"OPS/images/panel", epubImage(t)})
+			entries = append(entries, memEntry{"OPS/images/panel", epubImage(t)})
 			b, err := Open(writeEPUB(t, entries, ".epub"))
 			if err != nil {
 				t.Fatal(err)

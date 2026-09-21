@@ -13,14 +13,6 @@ import (
 	"testing"
 )
 
-type testEntry struct {
-	name string
-	data []byte
-}
-
-func (e testEntry) Name() string                 { return e.name }
-func (e testEntry) Open() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(e.data)), nil }
-
 type testArchive []entry
 
 func (a testArchive) Entries() []entry { return a }
@@ -36,7 +28,7 @@ func TestPageRejectsOversizedDimensions(t *testing.T) {
 	binary.LittleEndian.PutUint32(data[22:], 50000)
 	binary.LittleEndian.PutUint16(data[26:], 1)
 	binary.LittleEndian.PutUint16(data[28:], 24)
-	b := &Book{pages: []entry{testEntry{"page.bmp", data}}}
+	b := &Book{pages: []entry{memEntry{"page.bmp", data}}}
 	if _, _, err := b.PageBytes(0); err == nil || !strings.Contains(err.Error(), "decoded pixels") {
 		t.Fatalf("oversized encoded page: %v", err)
 	}
@@ -52,7 +44,7 @@ func TestReadBoundedAndMetadata(t *testing.T) {
 	if data, err := readBounded(strings.NewReader("1234"), 4); err != nil || string(data) != "1234" {
 		t.Fatalf("exact limit: %q, %v", data, err)
 	}
-	b := &Book{arc: testArchive{testEntry{"ComicInfo.xml", bytes.Repeat([]byte(" "), maxMetadataBytes+1)}}}
+	b := &Book{arc: testArchive{memEntry{"ComicInfo.xml", bytes.Repeat([]byte(" "), maxMetadataBytes+1)}}}
 	if _, err := b.Chapters(); err == nil {
 		t.Fatal("accepted oversized metadata")
 	}
@@ -92,6 +84,26 @@ func TestOpenUsesAbsolutePath(t *testing.T) {
 	}
 	if !b.CanInvertPage(0) || b.CanInvertPage(-1) || b.CanInvertPage(b.Len()) {
 		t.Fatal("comic inversion eligibility or page bounds changed")
+	}
+}
+
+func TestOpenRejectsUnknownFormats(t *testing.T) {
+	for name, data := range map[string]string{"notes.txt": "plain text", "page.fb2": "<html><body>markup</body></html>", "empty.pdf": ""} {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		b, err := Open(path)
+		if err == nil {
+			b.Close()
+			t.Fatalf("opened %s", name)
+		}
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if _, err := Open(filepath.Join(t.TempDir(), "absent.cbz")); err == nil || !strings.Contains(err.Error(), "absent.cbz") {
+		t.Fatalf("missing file: %v", err)
 	}
 }
 

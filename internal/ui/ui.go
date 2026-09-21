@@ -185,7 +185,7 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 	}
 
 	fp := filepicker.New()
-	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar", ".epub"}
+	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar", ".epub", ".fb2", ".docx", ".doc", ".pdf", ".djvu", ".djv"}
 	if wd, err := os.Getwd(); err == nil {
 		fp.CurrentDirectory = wd
 	}
@@ -1738,8 +1738,8 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	help := `cbzr: terminal reader (.cbz/.cbr/.epub)
-EPUB text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Ghostty).
+	help := `cbzr: terminal reader (.cbz/.cbr/.epub/.fb2/.docx/.doc/.pdf/.djvu)
+Book text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Ghostty).
 
   j / k          next / prev page or spread (webtoon: one viewport; 2j for two)
   J / K          next / prev page or spread (webtoon: half a viewport)
