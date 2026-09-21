@@ -113,20 +113,21 @@ func Open(path string) (*Book, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
 	}
-	isEPUB := strings.EqualFold(filepath.Ext(path), ".epub")
-	docx := false
+	container, docx := false, false
 	var fb2 entry
 	for _, e := range arc.Entries() {
 		switch name := e.Name(); {
 		case name == "META-INF/container.xml":
-			isEPUB = true
+			container = true
 		case name == "word/document.xml":
 			docx = true
 		case fb2 == nil && !hiddenEntry(name) && strings.EqualFold(filepath.Ext(name), ".fb2"):
 			fb2 = e
 		}
 	}
-	if isEPUB {
+	// The contents win over the extension: an EPUB container, then DOCX, then
+	// a zipped FB2. A bare .epub extension still demands an EPUB.
+	if container || !docx && fb2 == nil && strings.EqualFold(filepath.Ext(path), ".epub") {
 		if _, ok := arc.(*zipArchive); !ok {
 			arc.Close()
 			return nil, fmt.Errorf("EPUB requires a ZIP container")

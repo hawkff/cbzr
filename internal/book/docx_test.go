@@ -62,4 +62,12 @@ func TestOpenDOCX(t *testing.T) {
 			t.Fatalf("line %d %q uses the wrong style", i, lines[i].text)
 		}
 	}
+	renamed, err := Open(writeEPUB(t, docxFixture(t), ".epub"))
+	if err != nil {
+		t.Fatalf("DOCX contents must win over the extension: %v", err)
+	}
+	defer renamed.Close()
+	if renamed.Len() != 3 {
+		t.Fatalf("renamed DOCX pages = %d", renamed.Len())
+	}
 }
