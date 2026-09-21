@@ -76,7 +76,7 @@ func TestOpenPDF(t *testing.T) {
 	if _, mime, err := b.PageBytes(0); err != nil || mime != "image/png" {
 		t.Fatalf("page bytes: %s, %v", mime, err)
 	}
-	if _, err := b.PageBytes(2); err == nil {
+	if _, _, err := b.PageBytes(2); err == nil {
 		t.Fatal("served a page past the count")
 	}
 }
