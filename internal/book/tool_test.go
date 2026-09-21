@@ -44,7 +44,7 @@ func TestPPMToPNG(t *testing.T) {
 
 func TestOpenPDF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "two.pdf")
-	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]>>endobj\n4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 200]>>endobj\ntrailer<</Root 1 0 R>>\n"
+	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/CropBox[0 0 100 100]>>endobj\n4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 200]>>endobj\ntrailer<</Root 1 0 R>>\n"
 	if err := os.WriteFile(path, []byte(pdf), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -52,15 +52,29 @@ func TestOpenPDF(t *testing.T) {
 	if err := os.WriteFile(shifted, append([]byte(strings.Repeat("junk\n", 100)), pdf...), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	xmlShifted := filepath.Join(t.TempDir(), "xml-shifted.pdf")
+	if err := os.WriteFile(xmlShifted, []byte("<junk>\n"+pdf), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Run("missing tools", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		for _, name := range []string{path, shifted} {
+		for _, name := range []string{path, shifted, xmlShifted} {
 			if _, err := Open(name); err == nil || !strings.Contains(err.Error(), "pdfinfo is not on PATH") {
 				t.Fatalf("%s without pdfinfo: %v", filepath.Base(name), err)
 			}
 		}
 	})
 	requireTools(t, "pdfinfo", "pdftoppm")
+	for _, name := range []string{shifted, xmlShifted} {
+		b, err := Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Close()
+		if b.Len() != 2 {
+			t.Fatalf("%s has %d pages", name, b.Len())
+		}
+	}
 	b, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -79,8 +93,13 @@ func TestOpenPDF(t *testing.T) {
 	if img.Bounds() != image.Rect(0, 0, 1000, 2000) {
 		t.Fatalf("rendered %v", img.Bounds())
 	}
-	if _, mime, err := b.PageBytes(0); err != nil || mime != "image/png" {
+	data, mime, err := b.PageBytes(0)
+	if err != nil || mime != "image/png" {
 		t.Fatalf("page bytes: %s, %v", mime, err)
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width != 2000 || config.Height != 2000 {
+		t.Fatalf("CropBox dimensions: %+v, %v", config, err)
 	}
 	if _, _, err := b.PageBytes(2); err == nil {
 		t.Fatal("served a page past the count")
@@ -120,6 +139,49 @@ func TestOpenDJVU(t *testing.T) {
 	if _, mime, err := b.PageBytes(0); err != nil || mime != "image/png" {
 		t.Fatalf("page bytes: %s, %v", mime, err)
 	}
+}
+
+func TestToolDiagnostics(t *testing.T) {
+	var diagnostics toolDiagnostics
+	payload := bytes.Repeat([]byte("x"), 3*maxToolDiagnostics)
+	for range 2 {
+		if n, err := diagnostics.Write(payload); err != nil || n != len(payload) {
+			t.Fatalf("diagnostic drain: %d, %v", n, err)
+		}
+	}
+	if len(diagnostics) != maxToolDiagnostics || !bytes.Equal(diagnostics, payload[:maxToolDiagnostics]) {
+		t.Fatal("diagnostics did not keep a bounded prefix")
+	}
+	for _, mode := range []string{"success", "failure"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("CBZR_TEST_TOOL_OUTPUT", mode)
+			out, err := runTool(os.Args[0], "-test.run=^TestToolOutputHelper$")
+			if mode == "success" {
+				if err != nil || string(out) != "ok" {
+					t.Fatalf("noisy tool: %q, %v", out, err)
+				}
+			} else if err == nil || !strings.HasSuffix(err.Error(), strings.Repeat("x", 200)) {
+				t.Fatalf("tool error lost its diagnostic prefix: %v", err)
+			}
+		})
+	}
+}
+
+func TestToolOutputHelper(t *testing.T) {
+	mode := os.Getenv("CBZR_TEST_TOOL_OUTPUT")
+	if mode == "" {
+		return
+	}
+	if _, err := os.Stderr.Write(bytes.Repeat([]byte("x"), 256*maxToolDiagnostics)); err != nil {
+		os.Exit(2)
+	}
+	if _, err := os.Stdout.WriteString("ok"); err != nil {
+		os.Exit(2)
+	}
+	if mode == "failure" {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func TestOpenDOC(t *testing.T) {

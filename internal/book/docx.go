@@ -61,17 +61,18 @@ func openDOCX(arc archive, path string) (*Book, error) {
 	}
 	b := newBook(path, true)
 	b.arc = arc
-	return layoutBook(b, pkg, docxNode(doc.child("body"), styles, images), resources)
+	return layoutBook(b, pkg, docxNode(doc.child("body"), styles, images, []*epubNode{doc}), resources)
 }
 
 // docxNode converts one WordprocessingML element to XHTML.
-func docxNode(n *epubNode, styles, images map[string]string) *epubNode {
+func docxNode(n *epubNode, styles, images map[string]string, ancestors []*epubNode) *epubNode {
 	if n.name.Local == "" {
 		return &epubNode{text: n.text}
 	}
 	if docxDrop[n.name.Local] {
 		return &epubNode{}
 	}
+	ancestors = append(ancestors, n)
 	out := &epubNode{name: xhtml("span")}
 	if local, ok := docxElements[n.name.Local]; ok {
 		out.name.Local = local
@@ -80,14 +81,9 @@ func docxNode(n *epubNode, styles, images map[string]string) *epubNode {
 	case "tab":
 		return &epubNode{text: " "}
 	case "AlternateContent":
-		// Render one branch: the first choice carries the same content as the
-		// fallback in richer markup, which the generic walk reads as well.
-		if choice := n.child("Choice"); choice.name.Local != "" {
-			return docxNode(choice, styles, images)
-		}
-		return docxNode(n.child("Fallback"), styles, images)
+		return docxNode(docxAlternate(n, ancestors), styles, images, ancestors)
 	case "drawing", "pict":
-		name := images[docxEmbed(n)]
+		name := images[docxEmbed(n, ancestors)]
 		if name == "" {
 			return &epubNode{}
 		}
@@ -106,7 +102,10 @@ func docxNode(n *epubNode, styles, images map[string]string) *epubNode {
 		}
 	}
 	for _, c := range n.children {
-		out.children = append(out.children, docxNode(c, styles, images))
+		if c.name.Local == "" && n.name.Local != "t" {
+			continue // XML indentation is not document text.
+		}
+		out.children = append(out.children, docxNode(c, styles, images, ancestors))
 	}
 	if n.name.Local == "r" {
 		props := n.child("rPr")
@@ -128,16 +127,57 @@ func docxOn(n *epubNode) bool {
 	return n.name.Local != ""
 }
 
-// docxEmbed finds the relationship of the first picture in a drawing.
-func docxEmbed(n *epubNode) string {
+// docxAlternate selects the first choice whose required namespaces we read.
+func docxAlternate(n *epubNode, ancestors []*epubNode) *epubNode {
+	for _, c := range n.children {
+		if c.name.Local != "Choice" {
+			continue
+		}
+		requires := strings.Fields(c.attr("Requires"))
+		supported := len(requires) > 0
+		for _, prefix := range requires {
+			switch docxNamespace(append(ancestors, c), prefix) {
+			case "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+				"http://purl.oclc.org/ooxml/wordprocessingml/main",
+				"http://schemas.openxmlformats.org/drawingml/2006/main",
+				"http://purl.oclc.org/ooxml/drawingml/main",
+				"http://schemas.openxmlformats.org/drawingml/2006/picture",
+				"http://purl.oclc.org/ooxml/drawingml/picture":
+			default:
+				supported = false
+			}
+		}
+		if supported {
+			return c
+		}
+	}
+	return n.child("Fallback")
+}
+
+func docxNamespace(ancestors []*epubNode, prefix string) string {
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		for _, a := range ancestors[i].attrs {
+			if a.Name.Space == "xmlns" && a.Name.Local == prefix {
+				return a.Value
+			}
+		}
+	}
+	return ""
+}
+
+// docxEmbed finds the relationship of the first picture in a selected branch.
+func docxEmbed(n *epubNode, ancestors []*epubNode) string {
 	switch n.name.Local {
+	case "AlternateContent":
+		branch := docxAlternate(n, ancestors)
+		return docxEmbed(branch, append(ancestors, branch))
 	case "blip":
 		return n.attr("embed")
 	case "imagedata":
 		return n.attr("id")
 	}
 	for _, c := range n.children {
-		if id := docxEmbed(c); id != "" {
+		if id := docxEmbed(c, append(ancestors, c)); id != "" {
 			return id
 		}
 	}

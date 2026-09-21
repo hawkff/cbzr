@@ -56,6 +56,17 @@ type Book struct {
 	mu    sync.Mutex
 	cache map[int]image.Image // small LRU-ish cache
 	order []int
+
+	// ponytail: serialize cache misses per book; use per-page loads if prefetch delays navigation.
+	loadMu       sync.Mutex
+	encoded      map[int]encodedPage
+	encodedOrder []int
+	encodedBytes int
+}
+
+type encodedPage struct {
+	data []byte
+	mime string
 }
 
 const (
@@ -106,7 +117,7 @@ func Open(path string) (*Book, error) {
 		return nil, fmt.Errorf("open %s: %w", filepath.Base(path), err)
 	}
 	switch {
-	case bytes.Contains(head, []byte("%PDF-")):
+	case bytes.HasPrefix(head, []byte("%PDF-")):
 		return openRendered(path, false)
 	case bytes.HasPrefix(head, []byte("AT&TFORM")):
 		return openRendered(path, true)
@@ -116,7 +127,14 @@ func Open(path string) (*Book, error) {
 	arc, err := openArchive(path)
 	if errors.Is(err, errNotArchive) {
 		if looksLikeXML(head) {
-			return openFB2File(path)
+			b, xmlErr := openFB2File(path)
+			if xmlErr == nil || !bytes.Contains(head, []byte("%PDF-")) {
+				return b, xmlErr
+			}
+		}
+		// A shifted PDF signature must not override a valid archive or FB2.
+		if bytes.Contains(head, []byte("%PDF-")) {
+			return openRendered(path, false)
 		}
 		return nil, fmt.Errorf("%s: unsupported format", filepath.Base(path))
 	}
@@ -206,10 +224,30 @@ func (b *Book) CanInvertPage(i int) bool {
 	return i >= 0 && i < len(b.pages) && (!b.text || b.IsTextPage(i))
 }
 
-// PageBytes returns the raw encoded bytes of page i (for HTTP serving).
+// PageBytes returns a copy of the cached encoded bytes of page i (for HTTP serving).
 func (b *Book) PageBytes(i int) ([]byte, string, error) {
+	b.mu.Lock()
+	cached, ok := b.encoded[i]
+	b.mu.Unlock()
+	if ok {
+		return bytes.Clone(cached.data), cached.mime, nil
+	}
+	b.loadMu.Lock()
+	defer b.loadMu.Unlock()
+	data, mime, err := b.pageBytes(i)
+	return bytes.Clone(data), mime, err
+}
+
+// pageBytes requires loadMu; the encoded cache shares the page count and byte limits.
+func (b *Book) pageBytes(i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
+	}
+	b.mu.Lock()
+	cached, ok := b.encoded[i]
+	b.mu.Unlock()
+	if ok {
+		return cached.data, cached.mime, nil
 	}
 	e := b.pages[i]
 	r, err := e.Open()
@@ -228,7 +266,22 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if config.Width <= 0 || config.Height <= 0 || config.Width > maxPagePixels/config.Height {
 		return nil, "", fmt.Errorf("page %d exceeds %d decoded pixels", i+1, maxPagePixels)
 	}
-	return data, "image/" + format, nil
+	mime := "image/" + format
+	b.mu.Lock()
+	if b.encoded == nil {
+		b.encoded = make(map[int]encodedPage)
+	}
+	b.encoded[i] = encodedPage{data, mime}
+	b.encodedOrder = append(b.encodedOrder, i)
+	b.encodedBytes += len(data)
+	for len(b.encodedOrder) > cacheSize || b.encodedBytes > maxPageBytes {
+		evict := b.encodedOrder[0]
+		b.encodedOrder = b.encodedOrder[1:]
+		b.encodedBytes -= len(b.encoded[evict].data)
+		delete(b.encoded, evict)
+	}
+	b.mu.Unlock()
+	return data, mime, nil
 }
 
 // Page decodes page i, using a small in-memory cache.
@@ -243,7 +296,15 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 	b.mu.Unlock()
 
-	data, _, err := b.PageBytes(i)
+	b.loadMu.Lock()
+	defer b.loadMu.Unlock()
+	b.mu.Lock()
+	if img, ok := b.cache[i]; ok {
+		b.mu.Unlock()
+		return img, nil
+	}
+	b.mu.Unlock()
+	data, _, err := b.pageBytes(i)
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +314,9 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 
 	b.mu.Lock()
+	if b.cache == nil {
+		b.cache = make(map[int]image.Image)
+	}
 	if _, ok := b.cache[i]; !ok {
 		b.cache[i] = img
 		b.order = append(b.order, i)

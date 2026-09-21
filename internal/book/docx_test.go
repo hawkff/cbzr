@@ -2,6 +2,7 @@ package book
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -46,7 +47,7 @@ func TestOpenDOCX(t *testing.T) {
 	if img, err := b.Page(1); err != nil || img.Bounds().Dx() != 3 {
 		t.Fatalf("picture: %v", err)
 	}
-	if got := b.PageText(2); !reflect.DeepEqual(got, []string{"After", "Choice", "Only fallback", "Cell"}) {
+	if got := b.PageText(2); !reflect.DeepEqual(got, []string{"After", "Fallback", "Only fallback", "Cell"}) {
 		t.Fatalf("last page: %#v", got)
 	}
 	chapters, err := b.Chapters()
@@ -70,5 +71,66 @@ func TestOpenDOCX(t *testing.T) {
 	defer renamed.Close()
 	if renamed.Len() != 3 {
 		t.Fatalf("renamed DOCX pages = %d", renamed.Len())
+	}
+}
+
+func TestDOCXCompatibility(t *testing.T) {
+	const fallback = `<mc:Fallback><w:t>Fallback</w:t></mc:Fallback>`
+	for _, tc := range []struct {
+		name, markup, want string
+		picture            bool
+	}{
+		{"unknown namespace", `<mc:Choice Requires="future"><w:t>Wrong</w:t></mc:Choice>` + fallback, "Fallback", false},
+		{"undeclared prefix", `<mc:Choice Requires="missing"><w:t>Wrong</w:t></mc:Choice>` + fallback, "Fallback", false},
+		{"missing requirements", `<mc:Choice><w:t>Wrong</w:t></mc:Choice>` + fallback, "Fallback", false},
+		{"all requirements", `<mc:Choice Requires="word future"><w:t>Wrong</w:t></mc:Choice>` + fallback, "Fallback", false},
+		{"first supported choice", `<mc:Choice Requires="future"><w:t>Wrong</w:t></mc:Choice><mc:Choice Requires="word"><w:t>Chosen</w:t></mc:Choice><mc:Choice Requires="w"><w:t>Twice</w:t></mc:Choice>` + fallback, "Chosen", false},
+		{"choice declaration", `<mc:Choice xmlns:local="http://schemas.openxmlformats.org/wordprocessingml/2006/main" Requires="local"><w:t>Chosen</w:t></mc:Choice>` + fallback, "Chosen", false},
+		{"rebound prefix", `<mc:Choice xmlns:word="urn:unsupported" Requires="word"><w:t>Wrong</w:t></mc:Choice>` + fallback, "Fallback", false},
+		{"no fallback", `<mc:Choice Requires="word"><w:t>Chosen</w:t></mc:Choice>`, "Chosen", false},
+		{"picture fallback", `<mc:Choice Requires="future"><w:drawing/></mc:Choice><mc:Fallback><w:drawing><a:blip r:embed="rId2"/></w:drawing></mc:Fallback>`, "", true},
+		{"nested picture", `<mc:Choice Requires="word"><w:drawing><mc:AlternateContent><mc:Choice Requires="future"><a:blip r:embed="absent"/></mc:Choice><mc:Fallback><a:blip r:embed="rId2"/></mc:Fallback></mc:AlternateContent></w:drawing></mc:Choice>`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := docxFixture(t)
+			entries[1].data = []byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:word="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:future="urn:unsupported" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><mc:AlternateContent>` + tc.markup + `</mc:AlternateContent></w:r></w:p></w:body></w:document>`)
+			b, err := Open(writeEPUB(t, entries, ".docx"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			if b.Len() != 1 || b.IsTextPage(0) == tc.picture {
+				t.Fatalf("pages = %d, text = %t", b.Len(), b.IsTextPage(0))
+			}
+			if tc.picture {
+				if b.pages[0].Name() != "word/media/image1.png" {
+					t.Fatalf("picture = %s", b.pages[0].Name())
+				}
+			} else if got := strings.Join(b.PageText(0), ""); got != tc.want {
+				t.Fatalf("text = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDOCXIgnoresXMLIndentation(t *testing.T) {
+	entries := docxFixture(t)
+	entries[1].data = []byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Hello</w:t></w:r>
+      <w:r><w:t>World</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> </w:t></w:r>
+      <w:r><w:t>again</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`)
+	b, err := Open(writeEPUB(t, entries, ".docx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if got := b.PageText(0); !reflect.DeepEqual(got, []string{"HelloWorld again"}) {
+		t.Fatalf("paragraphs: %#v", got)
 	}
 }

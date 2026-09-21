@@ -18,10 +18,19 @@ import (
 
 const (
 	// renderedPageSize bounds each side of a rendered PDF or DJVU page.
-	renderedPageSize = "2000"
-	maxRenderedPages = 100_000
-	toolTimeout      = 2 * time.Minute
+	renderedPageSize   = "2000"
+	maxRenderedPages   = 100_000
+	toolTimeout        = 2 * time.Minute
+	maxToolDiagnostics = 4 << 10
 )
+
+// toolDiagnostics keeps a prefix and drains the rest so stderr cannot block a tool.
+type toolDiagnostics []byte
+
+func (d *toolDiagnostics) Write(p []byte) (int, error) {
+	*d = append(*d, p[:min(len(p), maxToolDiagnostics-len(*d))]...)
+	return len(p), nil
+}
 
 // runTool runs an external converter and returns its standard output, which
 // may not exceed maxPageBytes.
@@ -29,7 +38,7 @@ func runTool(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	var diagnostics bytes.Buffer
+	var diagnostics toolDiagnostics
 	cmd.Stderr = &diagnostics
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -46,7 +55,7 @@ func runTool(name string, args ...string) ([]byte, error) {
 		cancel() // stop a writer that outgrew the limit before waiting for it
 	}
 	if err := cmd.Wait(); err != nil && readErr == nil {
-		msg := strings.TrimSpace(diagnostics.String())
+		msg := strings.TrimSpace(string(diagnostics))
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -80,7 +89,7 @@ func (p toolPage) Open() (io.ReadCloser, error) {
 			data, err = ppmToPNG(data)
 		}
 	} else {
-		data, err = runTool("pdftoppm", "-png", "-scale-to", renderedPageSize, "-f", n, "-l", n, "-singlefile", p.path)
+		data, err = runTool("pdftoppm", "-png", "-cropbox", "-scale-to", renderedPageSize, "-f", n, "-l", n, "-singlefile", p.path)
 	}
 	if err != nil {
 		return nil, err
