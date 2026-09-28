@@ -48,6 +48,28 @@ func Invert(src image.Image) *image.RGBA {
 	return dst
 }
 
+// Highlight returns a copy of src with the rectangles tinted toward light
+// blue, halfway, so the text under a selection stays legible on plain and
+// inverted pages.
+func Highlight(src image.Image, rects []image.Rectangle) *image.RGBA {
+	dst := image.NewRGBA(src.Bounds())
+	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
+	tint := [3]uint16{128, 176, 255}
+	for _, r := range rects {
+		r = r.Intersect(dst.Bounds())
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			i := dst.PixOffset(r.Min.X, y)
+			for x := r.Min.X; x < r.Max.X; x++ {
+				for c, t := range tint {
+					dst.Pix[i+c] = uint8((uint16(dst.Pix[i+c]) + t) / 2)
+				}
+				i += 4
+			}
+		}
+	}
+	return dst
+}
+
 func rotate(src image.Image, q int) image.Image {
 	if q == 0 {
 		return src

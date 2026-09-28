@@ -50,6 +50,7 @@ type pane struct {
 	page    int
 	res     render.Result
 	res2    render.Result // right page in spread mode
+	shown   [2]int        // pages in res and res2; page may already point past them while a turn renders
 	err     error
 	err2    error
 	loading bool
@@ -63,6 +64,8 @@ type pane struct {
 	webScroll float64 // pending webtoon scroll in terminal rows
 	webStep   float64 // scroll included in the in-flight frame
 	textTop   int     // rows scrolled on a plain-text book page
+	sel       *selection
+	selDirty  bool // the selection changed while a frame was in flight
 }
 
 func newPane() *pane { return &pane{zoom: 1, cx: 0.5, cy: 0.5} }
@@ -112,6 +115,12 @@ type Model struct {
 	resizeGen       int
 	saveOnQuit      bool
 	nativeRequested bool
+
+	drag           *hit // where the mouse button went down on a text page
+	pressX, pressY int
+	hover          string // destination of the link under the mouse
+	clip           []byte // pending OSC 52 clipboard write
+	clipGen        int
 }
 
 type renderedMsg struct {
@@ -352,6 +361,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.err2 = msg.err
 			if msg.err == nil {
 				p.res2 = msg.res
+				p.shown[1] = msg.page
 				return m, frameReadyAfterPaint(p, msg.pane, msg.slot, msg.gen, false)
 			}
 			return m, nil
@@ -362,7 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		stalled := m.webtoon && msg.scroll != 0 && p.page == msg.page && math.Abs(p.webOffset-msg.offset) < 1e-9
-		p.page = msg.page
+		p.page, p.shown[0] = msg.page, msg.page
 		p.webOffset = msg.offset
 		p.webScroll -= msg.scroll
 		p.webStep = 0
@@ -398,8 +408,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		p.loading = false
-		if msg.rerender || m.webtoon && p.webScroll != 0 {
+		if msg.rerender || m.webtoon && p.webScroll != 0 || p.selDirty {
+			p.selDirty = false
 			return m, m.renderPane(msg.pane)
+		}
+		return m, nil
+
+	case clipDoneMsg:
+		if msg.gen == m.clipGen {
+			m.clip = nil
 		}
 		return m, nil
 
@@ -460,27 +477,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if msg.Action != tea.MouseActionPress || m.mode != modeRead {
+	if m.mode != modeRead {
 		return m, nil
 	}
 	target := 0
 	if m.split && msg.X > (m.width-1)/2 {
 		target = 1
 	}
-	switch msg.Button {
-	case tea.MouseButtonWheelDown:
-		if m.webtoon {
-			return m.scrollWebtoon(target, 1)
+	switch msg.Action {
+	case tea.MouseActionPress:
+		switch msg.Button {
+		case tea.MouseButtonWheelDown:
+			if m.webtoon {
+				return m.scrollWebtoon(target, 1)
+			}
+			return m.turn(target, 1)
+		case tea.MouseButtonWheelUp:
+			if m.webtoon {
+				return m.scrollWebtoon(target, -1)
+			}
+			return m.turn(target, -1)
+		case tea.MouseButtonLeft:
+			if m.split {
+				m.active = target
+			}
+			return m.press(msg.X, msg.Y)
+		case tea.MouseButtonRight:
+			return m.copyLink(msg.X, msg.Y)
 		}
-		return m.turn(target, 1)
-	case tea.MouseButtonWheelUp:
-		if m.webtoon {
-			return m.scrollWebtoon(target, -1)
+	case tea.MouseActionMotion:
+		if m.drag != nil && msg.Button == tea.MouseButtonLeft {
+			return m.dragTo(msg.X, msg.Y)
 		}
-		return m.turn(target, -1)
-	case tea.MouseButtonLeft:
-		if m.split {
-			m.active = target
+		if msg.Button == tea.MouseButtonNone {
+			m.hover = ""
+			if _, link, ok := m.linkAt(msg.X, msg.Y); ok {
+				m.hover = linkLabel(link)
+			}
+		}
+	case tea.MouseActionRelease:
+		if m.drag != nil && msg.Button != tea.MouseButtonRight {
+			return m.release(msg.X, msg.Y)
 		}
 	}
 	return m, nil
@@ -1422,6 +1459,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	gen, page, b := p.gen, p.page, p.book
 	rot, zoom, cx, cy := p.rot, p.zoom, p.cx, p.cy
 	inverted := p.inverted
+	var sel selection
+	if p.sel != nil {
+		sel = *p.sel // a copy: the drag keeps updating the pane's selection
+	}
+	hasSel := p.sel != nil
 	offset, scroll := p.webOffset, p.webScroll
 	if m.webtoon {
 		scroll = smoothWebtoonScroll(scroll)
@@ -1461,14 +1503,19 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			} else {
 				img, err = load(pg)
 				if err == nil {
+					if inverted && b.CanInvertPage(pg) {
+						img = render.Invert(img)
+					}
+					if hasSel && sel.page == pg {
+						if _, rects := b.Select(pg, sel.x0, sel.y0, sel.x1, sel.y1); len(rects) > 0 {
+							img = render.Highlight(img, rects)
+						}
+					}
 					img = render.Transform(img, rot, zoom, cx, cy)
 				}
 			}
 			if err != nil {
 				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, err: err}
-			}
-			if !webtoon && inverted && b.CanInvertPage(pg) {
-				img = render.Invert(img)
 			}
 			res, err := r.Render(img, id, cols, rows)
 			return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, res: res, err: err}
@@ -1572,6 +1619,7 @@ func (m Model) View() string {
 	// Graphics transmissions ride on line 0 as zero-width escapes: one
 	// writer, one frame, no torn APC sequences.
 	var oob strings.Builder
+	oob.Write(m.clip)
 	for i := 0; i < m.paneCount(); i++ {
 		oob.Write(m.panes[i].res.Transmit)
 		oob.Write(m.panes[i].res2.Transmit)
@@ -1729,6 +1777,9 @@ func (m Model) statusView() string {
 	if m.status != "" {
 		left += "  ·  " + safeText(m.status)
 	}
+	if m.hover != "" {
+		left += "  ·  → " + safeText(m.hover)
+	}
 	right := "j/k page e in-browser s spread R rotate tab chapters  ? help  q quit "
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(right)
 	if gap < 1 {
@@ -1760,6 +1811,8 @@ Book text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Gh
   0              reset zoom
   arrows         pan while zoomed · scroll plain-text pages
   /              search: book text, OCR (tesseract) for images · n / p next / prev hit
+  mouse          drag selects and copies book text (Kitty/Ghostty) · click follows a link,
+                 hovering shows where it goes, right click copies it without tracking parameters
   o / O          open file in pane / in split
   x              close pane
   e              open current book in browser (127.0.0.1:5xxxx)

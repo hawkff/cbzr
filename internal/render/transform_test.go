@@ -33,3 +33,24 @@ func TestInvertPreservesAlphaBoundsAndSource(t *testing.T) {
 		t.Fatal("inversion changed source pixels or failed to restore colors")
 	}
 }
+
+func TestHighlightTintsRectanglesOnly(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			src.SetRGBA(x, y, color.RGBA{255, 255, 255, 255})
+		}
+	}
+	src.SetRGBA(0, 0, color.RGBA{0, 0, 0, 255})
+	before := append([]byte(nil), src.Pix...)
+	got := Highlight(src, []image.Rectangle{image.Rect(0, 0, 2, 1), image.Rect(3, 3, 9, 9)})
+	if !bytes.Equal(src.Pix, before) {
+		t.Fatal("highlight changed the source")
+	}
+	if got.RGBAAt(0, 0) != (color.RGBA{64, 88, 127, 255}) || got.RGBAAt(1, 0) != (color.RGBA{191, 215, 255, 255}) {
+		t.Fatalf("tinted pixels: %v %v", got.RGBAAt(0, 0), got.RGBAAt(1, 0))
+	}
+	if got.RGBAAt(2, 0) != (color.RGBA{255, 255, 255, 255}) || got.RGBAAt(3, 3) == (color.RGBA{255, 255, 255, 255}) {
+		t.Fatalf("rectangle edges: %v %v", got.RGBAAt(2, 0), got.RGBAAt(3, 3))
+	}
+}

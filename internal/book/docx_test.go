@@ -15,7 +15,7 @@ func docxFixture(t *testing.T) []memEntry {
 <w:p><w:pPr><w:pStyle w:val="Ttulo1"/></w:pPr><w:r><w:t>Heading One</w:t></w:r></w:p>
 <w:p><w:r><w:t xml:space="preserve">Plain </w:t></w:r><w:r><w:rPr><w:b/><w:i w:val="0"/></w:rPr><w:t>bold</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF _Toc1 </w:instrText></w:r><w:r><w:tab/><w:t>text</w:t></w:r></w:p>
 <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>item</w:t></w:r></w:p>
-<w:p><w:r><w:rPr><w:i/></w:rPr><w:t>Italic</w:t></w:r></w:p>
+<w:p><w:bookmarkStart w:id="0" w:name="_Toc1"/><w:hyperlink r:id="rId3"><w:r><w:rPr><w:i/></w:rPr><w:t>Italic</w:t></w:r></w:hyperlink><w:bookmarkEnd w:id="0"/></w:p>
 <w:p><w:r><w:drawing><a:blip r:embed="rId2"/></w:drawing></w:r></w:p>
 <w:p><w:r><w:drawing><a:blip r:embed="rId9"/></w:drawing></w:r><w:r><w:t>After</w:t></w:r></w:p>
 <w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:t>Choice</w:t></mc:Choice><mc:Choice Requires="w14"><w:t>Twice</w:t></mc:Choice><mc:Fallback><w:t>Fallback</w:t></mc:Fallback></mc:AlternateContent></w:r></w:p>
@@ -63,6 +63,9 @@ func TestOpenDOCX(t *testing.T) {
 		if lines[i].runs[0].font != bundled[style] {
 			t.Fatalf("line %d %q uses the wrong style", i, lines[i].text)
 		}
+	}
+	if page, ok := b.anchors["#_Toc1"]; !ok || page != 0 || !reflect.DeepEqual(lines[3].links, []epubLink{{0, 6, "https://example.org/", false}}) {
+		t.Fatalf("hyperlink: %#v -> %v", lines[3].links, b.anchors)
 	}
 	renamed, err := Open(writeEPUB(t, docxFixture(t), ".epub"))
 	if err != nil {

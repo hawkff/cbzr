@@ -334,6 +334,7 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 		if len(b.pages) == first {
 			return nil, fmt.Errorf("EPUB spine item has no readable content: %s", item.name)
 		}
+		layout.settle()
 	}
 	if !linear || len(b.pages) == 0 {
 		return nil, fmt.Errorf("EPUB needs a nonempty spine with linear content")

@@ -48,6 +48,7 @@ func layoutBook(b *Book, pkg *epubPackage, body *epubNode, resources map[string]
 	if err := l.flushPage(); err != nil {
 		return nil, err
 	}
+	l.settle()
 	if b.Len() == 0 {
 		return nil, fmt.Errorf("%s: no readable content", filepath.Base(b.Path))
 	}
@@ -61,7 +62,7 @@ var fb2Elements = map[string]string{
 	"p": "p", "v": "p", "text-author": "p", "date": "p",
 	"body": "div", "section": "div", "poem": "div", "stanza": "div", "annotation": "div", "coverpage": "div", "table": "div",
 	"epigraph": "blockquote", "cite": "blockquote",
-	"emphasis": "em", "strong": "strong", "empty-line": "br",
+	"emphasis": "em", "strong": "strong", "empty-line": "br", "a": "a",
 	"tr": "tr", "th": "th", "td": "td",
 }
 
@@ -130,11 +131,17 @@ func openFB2(data []byte, path string) (*Book, error) {
 
 // fb2Node converts one FictionBook element to XHTML. Section and body titles
 // become page-breaking headings; other titles and subtitles stay bold text.
+// Ids and link targets carry over.
 func fb2Node(n *epubNode, parent string, images map[string]string, notes bool) *epubNode {
 	if n.name.Local == "" {
 		return &epubNode{text: n.text}
 	}
 	out := &epubNode{name: xhtml("span")}
+	for _, a := range n.attrs {
+		if a.Name.Local == "id" || a.Name.Local == "href" && n.name.Local == "a" {
+			out.attrs = append(out.attrs, a)
+		}
+	}
 	if local, ok := fb2Elements[n.name.Local]; ok {
 		out.name.Local = local
 	}

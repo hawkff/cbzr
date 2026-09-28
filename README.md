@@ -91,6 +91,20 @@ pages it could not read, such as image pages without tesseract. Opening another 
 toggling split with `v`, enabling split with `O`, closing a pane, or entering
 the native reader cancels the search.
 
+## Mouse
+
+On book pages in Kitty and Ghostty, drag to select text. cbzr highlights the
+selection and copies it to the clipboard through OSC 52 when you release the
+button; inside tmux, `set-clipboard` must stay `on` or `external`. Click a
+link to follow it: web and mail links open in the browser, references inside
+the book turn to their page. Hovering over a link shows its destination in
+the status bar and right-click copies it. Opened and copied links lose
+tracking parameters such as `utm_*`, `fbclid`, `gclid` and `si`.
+
+Selection needs an unrotated page outside webtoon mode. Terminals without
+pixel graphics show book text as plain text; hold shift there to use the
+terminal's own selection.
+
 ## Web reader
 
 `e` starts a server on `127.0.0.1` using a random port from 50000 through

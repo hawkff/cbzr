@@ -45,9 +45,10 @@ type Book struct {
 	Path  string
 	Title string
 
-	arc   archive
-	pages []entry
-	text  bool // pages were laid out from text; only those pages invert
+	arc     archive
+	pages   []entry
+	text    bool           // pages were laid out from text; only those pages invert
+	anchors map[string]int // document name or name#id -> page, for internal links
 
 	chapOnce sync.Once
 	chaps    []Chapter

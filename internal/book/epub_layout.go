@@ -22,6 +22,7 @@ type epubRuby struct {
 type epubParagraph struct {
 	runes        []rune
 	rubies       []epubRuby
+	links        []epubLink
 	italic, bold bool // every text node so far carried the style
 	styled       bool
 }
@@ -316,6 +317,12 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 		var wrapped shaping.WrappedLine
 		wrapped, done = wrapper.WrapNextLine(epubPageWidth - 2*epubMargin)
 		line := freezeEPUBLine(wrapped.Line, string(p.runes[start:wrapped.NextLine]))
+		line.offset = start
+		for _, link := range p.links {
+			if link.start < wrapped.NextLine && link.end > start {
+				line.links = append(line.links, epubLink{max(link.start, start), min(link.end, wrapped.NextLine), link.href, link.internal})
+			}
+		}
 		if epubLineWidth(line) > fixed.I(epubPageWidth-2*epubMargin) || !epubLineFits(line) {
 			return fmt.Errorf("EPUB text cluster exceeds page width")
 		}
@@ -362,6 +369,7 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 				return err
 			}
 		}
+		l.place(wrapped.NextLine, done)
 		for i := range line.annotations {
 			line.annotations[i].y += l.y
 		}

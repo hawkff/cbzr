@@ -1,6 +1,7 @@
 package book
 
 import (
+	"encoding/xml"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -11,10 +12,11 @@ import (
 // tracked deletions and moves.
 var docxDrop = map[string]bool{"instrText": true, "delText": true, "del": true, "moveFrom": true}
 
-var docxElements = map[string]string{"body": "body", "p": "p", "tbl": "div", "tr": "tr", "tc": "td", "br": "br", "cr": "br"}
+var docxElements = map[string]string{"body": "body", "p": "p", "tbl": "div", "tr": "tr", "tc": "td", "br": "br", "cr": "br", "hyperlink": "a"}
 
 // openDOCX lays word/document.xml out through the XHTML layout. Heading
-// levels come from the style names and pictures from the relationships.
+// levels come from the style names, pictures and external links from the
+// relationships.
 func openDOCX(arc archive, path string) (*Book, error) {
 	files := map[string]entry{}
 	for _, e := range arc.Entries() {
@@ -41,15 +43,23 @@ func openDOCX(arc archive, path string) (*Book, error) {
 	pkg := &epubPackage{files: map[string]entry{}}
 	resources := map[string]string{}
 	images := map[string]string{} // relationship id -> package name
+	links := map[string]string{}  // relationship id -> external URL
 	if data, err := readEntry(files["word/_rels/document.xml.rels"], maxDocumentBytes); err == nil {
 		if rels, err := parseXML(data, maxDocumentTokens); err == nil {
 			for _, r := range rels.children {
 				base, target := "word/document.xml", r.attr("Target")
+				if r.name.Local != "Relationship" {
+					continue
+				}
+				if r.attr("TargetMode") == "External" {
+					links[r.attr("Id")] = target
+					continue
+				}
 				if strings.HasPrefix(target, "/") {
 					base, target = "", target[1:]
 				}
 				name, err := epubPath(base, target)
-				if r.name.Local != "Relationship" || r.attr("TargetMode") == "External" || err != nil || files[name] == nil || !IsImagePath(name) {
+				if err != nil || files[name] == nil || !IsImagePath(name) {
 					continue
 				}
 				id := "image-" + strconv.Itoa(len(images))
@@ -61,11 +71,11 @@ func openDOCX(arc archive, path string) (*Book, error) {
 	}
 	b := newBook(path, true)
 	b.arc = arc
-	return layoutBook(b, pkg, docxNode(doc.child("body"), styles, images, []*epubNode{doc}), resources)
+	return layoutBook(b, pkg, docxNode(doc.child("body"), styles, images, links, []*epubNode{doc}), resources)
 }
 
 // docxNode converts one WordprocessingML element to XHTML.
-func docxNode(n *epubNode, styles, images map[string]string, ancestors []*epubNode) *epubNode {
+func docxNode(n *epubNode, styles, images, links map[string]string, ancestors []*epubNode) *epubNode {
 	if n.name.Local == "" {
 		return &epubNode{text: n.text}
 	}
@@ -81,7 +91,15 @@ func docxNode(n *epubNode, styles, images map[string]string, ancestors []*epubNo
 	case "tab":
 		return &epubNode{text: " "}
 	case "AlternateContent":
-		return docxNode(docxAlternate(n, ancestors), styles, images, ancestors)
+		return docxNode(docxAlternate(n, ancestors), styles, images, links, ancestors)
+	case "bookmarkStart":
+		return &epubNode{name: xhtml("span"), attrs: []xml.Attr{{Name: xml.Name{Local: "id"}, Value: n.attr("name")}}}
+	case "hyperlink":
+		href := links[n.attr("id")]
+		if anchor := n.attr("anchor"); href == "" && anchor != "" {
+			href = "#" + anchor
+		}
+		out.attrs = []xml.Attr{{Name: xml.Name{Local: "href"}, Value: href}}
 	case "drawing", "pict":
 		name := images[docxEmbed(n, ancestors)]
 		if name == "" {
@@ -105,7 +123,7 @@ func docxNode(n *epubNode, styles, images map[string]string, ancestors []*epubNo
 		if c.name.Local == "" && n.name.Local != "t" {
 			continue // XML indentation is not document text.
 		}
-		out.children = append(out.children, docxNode(c, styles, images, ancestors))
+		out.children = append(out.children, docxNode(c, styles, images, links, ancestors))
 	}
 	if n.name.Local == "r" {
 		props := n.child("rPr")
