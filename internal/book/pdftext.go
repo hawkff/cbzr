@@ -7,38 +7,6 @@ import (
 	"strings"
 )
 
-// maxTextLayers bounds the PDF text layers a book keeps.
-const maxTextLayers = 64
-
-// pdfLines returns the words and links of a PDF page, extracted once with
-// poppler and kept for the most recent pages. A failed extraction stays
-// cached as an empty layer: retrying would start a process on every mouse
-// move over a page that cannot be read.
-func (b *Book) pdfLines(i int, p toolPage) []textLine {
-	b.mu.Lock()
-	lines, ok := b.layers[i]
-	b.mu.Unlock()
-	if ok {
-		return lines
-	}
-	lines = pdfTextLayer(p.path, p.page)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if kept, ok := b.layers[i]; ok {
-		return kept
-	}
-	if b.layers == nil {
-		b.layers = map[int][]textLine{}
-	}
-	b.layers[i] = lines
-	b.layerOrder = append(b.layerOrder, i)
-	for len(b.layerOrder) > maxTextLayers {
-		delete(b.layers, b.layerOrder[0])
-		b.layerOrder = b.layerOrder[1:]
-	}
-	return lines
-}
-
 // pdfTextLayer reads the words of a page with pdftotext in the crop box
 // space pdftoppm renders, and the link rectangles with pdftohtml. A block of
 // pdftotext is a paragraph; its lines carry a trailing space until the last.

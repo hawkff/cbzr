@@ -14,6 +14,7 @@ import (
 	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"cbzr/internal/book"
 	"cbzr/internal/bookmarks"
@@ -102,7 +103,7 @@ func main() {
 	for {
 		srv.SetBooks(m.Books())
 		// All-motion reporting feeds the link hover in the status bar.
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFPS(120))
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFPS(120), tea.WithFilter(ui.FilterMouse), tea.WithOutput(terminalOutput{os.Stdout}))
 		final, err := p.Run()
 		// Free terminal-side images after the program released the tty.
 		for id := uint32(1); id <= 6; id++ {
@@ -147,6 +148,19 @@ func main() {
 		closeBooks(fm)
 		return
 	}
+}
+
+// terminalOutput keeps the terminal from painting a partial frame. Embedding
+// the file preserves the descriptor Bubble Tea uses for resize detection.
+type terminalOutput struct{ *os.File }
+
+func (w terminalOutput) Write(p []byte) (int, error) {
+	frame := make([]byte, 0, len(p)+len(ansi.SetModeSynchronizedOutput)+len(ansi.ResetModeSynchronizedOutput))
+	frame = append(frame, ansi.SetModeSynchronizedOutput...)
+	frame = append(frame, p...)
+	frame = append(frame, ansi.ResetModeSynchronizedOutput...)
+	n, err := w.File.Write(frame)
+	return max(0, min(len(p), n-len(ansi.SetModeSynchronizedOutput))), err
 }
 
 func checkBooks(paths []string, stdout, stderr io.Writer) int {

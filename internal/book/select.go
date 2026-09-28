@@ -83,25 +83,76 @@ func (b *Book) Selectable(i int) bool {
 	return false
 }
 
-// lines returns the text layer of page i, extracting it on first use.
+const maxTextLayers = 64
+
+// lines caches book glyphs on first use. PDF hits only read prepared layers;
+// they must not wait for external tools on the input loop.
 func (b *Book) lines(i int) []textLine {
-	if i < 0 || i >= len(b.pages) {
-		return nil
+	if b.IsTextPage(i) {
+		b.PrepareText(i)
 	}
-	switch p := b.pages[i].(type) {
-	case epubTextPage:
-		return p.textLines()
-	case toolPage:
-		if !p.djvu {
-			return b.pdfLines(i, p)
-		}
-	}
-	return nil
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.layers[i]
 }
 
-// PrepareText extracts the text layer of page i so that later hits on it
-// do not wait for external tools.
-func (b *Book) PrepareText(i int) { b.lines(i) }
+// TextReady reports whether page i has a cached layer, including an empty
+// layer after a failed extraction.
+func (b *Book) TextReady(i int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.layers[i]
+	return ok
+}
+
+// PrepareText loads a bounded text layer cache. Concurrent preparations of
+// the same page share one extraction. Call it from a command for PDF pages.
+func (b *Book) PrepareText(i int) {
+	if !b.Selectable(i) {
+		return
+	}
+	for {
+		b.mu.Lock()
+		if _, ok := b.layers[i]; ok {
+			b.mu.Unlock()
+			return
+		}
+		if done := b.layerLoading[i]; done != nil {
+			b.mu.Unlock()
+			<-done
+			continue
+		}
+		if b.layerLoading == nil {
+			b.layerLoading = make(map[int]chan struct{})
+		}
+		done := make(chan struct{})
+		b.layerLoading[i] = done
+		b.mu.Unlock()
+
+		var lines []textLine
+		switch p := b.pages[i].(type) {
+		case epubTextPage:
+			lines = p.textLines()
+		case toolPage:
+			lines = pdfTextLayer(p.path, p.page)
+		}
+
+		b.mu.Lock()
+		if b.layers == nil {
+			b.layers = make(map[int][]textLine)
+		}
+		b.layers[i] = lines
+		b.layerOrder = append(b.layerOrder, i)
+		for len(b.layerOrder) > maxTextLayers {
+			delete(b.layers, b.layerOrder[0])
+			b.layerOrder = b.layerOrder[1:]
+		}
+		delete(b.layerLoading, i)
+		close(done)
+		b.mu.Unlock()
+		return
+	}
+}
 
 func epubFraction(x fixed.Int26_6) float64 { return float64(x) / 64 / epubPageWidth }
 
@@ -186,7 +237,7 @@ func caretAt(lines []textLine, x, y float64) caretPos {
 }
 
 // LinkAt returns the link under a point of a page, given as fractions of
-// the page width and height.
+// the page width and height. PDF pages need PrepareText first.
 func (b *Book) LinkAt(i int, x, y float64) (Link, bool) {
 	lines := b.lines(i)
 	if len(lines) == 0 {
@@ -229,7 +280,8 @@ func (b *Book) resolve(link epubLink) (Link, bool) {
 }
 
 // Select returns the text between two points of a page, given as page
-// fractions, in reading order, with the boxes it covers.
+// fractions, in reading order, with the boxes it covers. PDF pages need
+// PrepareText first.
 func (b *Book) Select(i int, x0, y0, x1, y1 float64) (string, []Box) {
 	lines := b.lines(i)
 	if len(lines) == 0 {
