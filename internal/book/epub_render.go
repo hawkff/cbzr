@@ -318,7 +318,13 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	bullet := false
 	marker := func() {
 		if bullet {
+			before := len(text.runes)
 			text.WriteString("\u2022 ")
+			for i := range links {
+				if links[i].start == before {
+					links[i].start = len(text.runes) // the bullet is not part of the link
+				}
+			}
 			bullet = false
 		}
 	}
@@ -419,9 +425,6 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 				l.pending = append(l.pending, epubAnchor{name + "#" + id, len(text.runes)})
 			}
 			if target, internal, ok := epubLinkTarget(name, n.attr("href")); ok {
-				if n.allText() != "" {
-					marker() // a list bullet is not part of the link
-				}
 				links = append(links, epubLink{start: len(text.runes), href: target, internal: internal})
 				defer func() {
 					link := links[len(links)-1]

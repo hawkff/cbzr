@@ -50,7 +50,7 @@ type pane struct {
 	page    int
 	res     render.Result
 	res2    render.Result // right page in spread mode
-	shown   int           // page in res; page may already point past it while a turn renders
+	shown   [2]int        // pages in res and res2; page may already point past them while a turn renders
 	err     error
 	err2    error
 	loading bool
@@ -361,6 +361,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.err2 = msg.err
 			if msg.err == nil {
 				p.res2 = msg.res
+				p.shown[1] = msg.page
 				return m, frameReadyAfterPaint(p, msg.pane, msg.slot, msg.gen, false)
 			}
 			return m, nil
@@ -371,7 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		stalled := m.webtoon && msg.scroll != 0 && p.page == msg.page && math.Abs(p.webOffset-msg.offset) < 1e-9
-		p.page, p.shown = msg.page, msg.page
+		p.page, p.shown[0] = msg.page, msg.page
 		p.webOffset = msg.offset
 		p.webScroll -= msg.scroll
 		p.webStep = 0

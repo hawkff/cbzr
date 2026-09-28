@@ -62,7 +62,7 @@ func (m Model) slotBox(i, slot int) image.Rectangle {
 // it. Rotated, webtoon and plain-text pages have no mapping.
 func (m Model) pageFraction(i, slot, x, y int, snap bool) (float64, float64, bool) {
 	p := m.panes[i]
-	res, page := p.res, p.shown+slot
+	res, page := p.res, p.shown[slot]
 	if slot == 1 {
 		res = p.res2
 	}
@@ -97,7 +97,7 @@ func (m Model) hitAt(x, y int) (hit, bool) {
 				continue
 			}
 			fx, fy, ok := m.pageFraction(i, slot, x, y, false)
-			return hit{pane: i, slot: slot, page: m.panes[i].shown + slot, x: fx, y: fy}, ok
+			return hit{pane: i, slot: slot, page: m.panes[i].shown[slot], x: fx, y: fy}, ok
 		}
 	}
 	return hit{}, false

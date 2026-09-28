@@ -561,7 +561,7 @@ func TestEPUBLinkLabelsAndLatinNormalization(t *testing.T) {
 func TestEPUBSelectionAndLinks(t *testing.T) {
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", `<p><a href="https://example.com/a?utm_source=x">Second</a> <a href="a.xhtml#note">paragraph</a>.</p><span id="ztail"/>`)
-	replaceEPUB(entries, "OPS/text/a.xhtml", "<p>Last note.</p>", `<p id="note">Last <a href="z.xhtml#missing">note</a> <a href="javascript:alert(1)">x</a>.</p><ul><li><a href="https://example.com/li">item</a></li></ul><p>`+strings.Repeat("word ", 300)+`<span id="deep"/>tail</p><span id="tail"/>`)
+	replaceEPUB(entries, "OPS/text/a.xhtml", "<p>Last note.</p>", `<p id="note">Last <a href="z.xhtml#missing">note</a> <a href="javascript:alert(1)">x</a>.</p><ul><li><a href="https://example.com/li">item</a></li><li><a href="https://example.com/block"><p>Block</p></a></li></ul><p>`+strings.Repeat("word ", 300)+`<span id="deep"/>tail</p><span id="tail"/>`)
 	b, err := Open(writeEPUB(t, entries, ".epub"))
 	if err != nil {
 		t.Fatal(err)
@@ -606,8 +606,13 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 	if _, ok := b.LinkAt(3, 0.5, 0.5); ok {
 		t.Fatal("link on a missing page")
 	}
-	if item := b.textLines(1)[1]; item.text != "\u2022 item" || !reflect.DeepEqual(item.links, []epubLink{{2, 6, "https://example.com/li", false}}) {
-		t.Fatalf("list item link: %q %#v", item.text, item.links)
+	for n, want := range map[int]epubLine{
+		1: {text: "\u2022 item", links: []epubLink{{2, 6, "https://example.com/li", false}}},
+		2: {text: "\u2022 Block", links: []epubLink{{2, 7, "https://example.com/block", false}}},
+	} {
+		if item := b.textLines(1)[n]; item.text != want.text || !reflect.DeepEqual(item.links, want.links) {
+			t.Fatalf("list item link: %q %#v", item.text, item.links)
+		}
 	}
 	want := map[string]int{"OPS/text/z.xhtml": 0, "OPS/text/z.xhtml#ztail": 0, "OPS/text/a.xhtml": 1, "OPS/text/a.xhtml#note": 1, "OPS/text/a.xhtml#deep": 2, "OPS/text/a.xhtml#tail": 2}
 	if b.Len() != 3 || !reflect.DeepEqual(b.anchors, want) {
