@@ -123,7 +123,7 @@ type pdfLink struct {
 	href string
 }
 
-// pdfLineLinks joins consecutive words whose centers fall in the same link
+// pdfLineLinks joins adjacent words whose centers fall in the same link
 // rectangle into one link range.
 func pdfLineLinks(line textLine, links []pdfLink) []epubLink {
 	var out []epubLink
@@ -141,7 +141,7 @@ func pdfLineLinks(line textLine, links []pdfLink) []epubLink {
 		if !ok {
 			continue
 		}
-		if last := len(out) - 1; last >= 0 && out[last].href == target && out[last].internal == internal {
+		if last := len(out) - 1; last >= 0 && out[last].href == target && out[last].internal == internal && box.index == out[last].end+1 {
 			out[last].end = box.index + box.count
 			continue
 		}
