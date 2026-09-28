@@ -10,16 +10,20 @@ package native
 
 int cbzr_native_run(uintptr_t handle, const char *title);
 void cbzr_native_link_done(void *view, uint64_t generation, int page, const char *url);
+void cbzr_native_frame_done(void *view, uint64_t generation, uintptr_t frame, void *pixels, int width, int height, size_t length, double blockedScroll);
 */
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/draw"
+	"maps"
 	"math"
 	"runtime"
 	"runtime/cgo"
+	"slices"
 	"sync"
 	"unsafe"
 
@@ -62,16 +66,143 @@ type shownPage struct {
 type reader struct {
 	mu sync.Mutex
 
-	book          *book.Book
-	state         State
-	action        Action
-	pendingScroll float64
-	blockedScroll float64
-	scaledPages   map[scaledPageKey]image.Image
-	scaledOrder   []scaledPageKey
-	shown         []shownPage
-	frameSize     image.Point
-	err           error
+	book           *book.Book
+	state          State
+	action         Action
+	pendingScroll  float64
+	blockedScroll  float64
+	scaledPages    map[scaledPageKey]image.Image
+	scaledOrder    []scaledPageKey
+	shown          []shownPage
+	frameSize      image.Point
+	err            error
+	closed         bool
+	renderContext  context.Context
+	renderCancel   context.CancelFunc
+	prefetching    bool
+	prefetchNext   [2]int // first page and count for the latest accepted frame
+	prefetchCancel context.CancelFunc
+}
+
+type renderedFrame struct {
+	owner, snapshot *reader
+	before          State
+	scroll          float64
+	image           *image.RGBA
+	cancel          context.CancelFunc
+}
+
+// renderAsync snapshots the view before doing page I/O and scaling. The window
+// never holds the reader lock while waiting for a converter or drawing pixels.
+func (r *reader) renderAsync(width, height int, done func(*renderedFrame)) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		done(nil)
+		return
+	}
+	if r.renderCancel != nil {
+		r.renderCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.renderCancel = cancel
+	snapshot := &reader{
+		book: r.book, state: r.state, pendingScroll: r.pendingScroll, renderContext: ctx,
+		scaledPages: maps.Clone(r.scaledPages), scaledOrder: slices.Clone(r.scaledOrder),
+	}
+	if snapshot.scaledPages == nil {
+		snapshot.scaledPages = make(map[scaledPageKey]image.Image)
+	}
+	f := &renderedFrame{owner: r, snapshot: snapshot, before: r.state, scroll: r.pendingScroll, cancel: cancel}
+	r.mu.Unlock()
+	go func() {
+		if ctx.Err() == nil {
+			f.image = snapshot.frame(width, height)
+		}
+		if err := ctx.Err(); err != nil {
+			f.image, snapshot.err = nil, err
+		}
+		done(f)
+	}()
+}
+
+func (r *reader) cancelRender() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.renderCancel != nil {
+		r.renderCancel()
+	}
+}
+
+// accept commits navigation separately from the hit map: the old image stays
+// clickable until AppKit paints this frame and calls show.
+func (f *renderedFrame) accept() bool {
+	r, s := f.owner, f.snapshot
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.state != f.before || s.renderContext.Err() != nil {
+		return false
+	}
+	r.state = s.state
+	r.pendingScroll -= f.scroll
+	r.scaledPages, r.scaledOrder, r.err = s.scaledPages, s.scaledOrder, s.err
+	if len(s.shown) > 0 && s.err == nil {
+		next, count := s.shown[len(s.shown)-1].page+1, 1
+		if s.state.Spread {
+			count = 2
+		}
+		target := [2]int{next, min(count, r.book.Len()-next)}
+		if target != r.prefetchNext {
+			if r.prefetchCancel != nil {
+				r.prefetchCancel()
+			}
+			r.prefetchNext = target
+			if !r.prefetching && target[1] > 0 {
+				r.prefetching = true
+				go r.prefetch()
+			}
+		}
+	}
+	return true
+}
+
+func (f *renderedFrame) show() {
+	r := f.owner
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		r.shown, r.frameSize = f.snapshot.shown, f.snapshot.frameSize
+	}
+}
+
+// One worker warms the next page or spread in the existing bounded book cache.
+func (r *reader) prefetch() {
+	for {
+		r.mu.Lock()
+		target, closed := r.prefetchNext, r.closed
+		if closed {
+			r.prefetching = false
+			r.mu.Unlock()
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		r.prefetchCancel = cancel
+		r.mu.Unlock()
+		for page := target[0]; page < target[0]+target[1]; page++ {
+			if _, err := r.book.PageContext(ctx, page); err != nil {
+				break
+			}
+		}
+		cancel()
+		r.mu.Lock()
+		r.prefetchCancel = nil
+		if r.prefetchNext == target {
+			r.prefetching = false
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+	}
 }
 
 // Available reports whether this build includes the native reader.
@@ -191,7 +322,7 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 	}
 	for slot, box := range slots {
 		page := r.state.Page + slot
-		img, err := r.book.Page(page)
+		img, err := r.pageImage(page)
 		if err != nil {
 			return nil, err
 		}
@@ -208,12 +339,20 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 	return canvas, nil
 }
 
+func (r *reader) pageImage(page int) (image.Image, error) {
+	ctx := r.renderContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return r.book.PageContext(ctx, page)
+}
+
 func (r *reader) scaledPage(page, width int) (image.Image, error) {
 	key := scaledPageKey{page: page, width: width, rotation: r.state.Rotation, inverted: r.state.Inverted && r.book.CanInvertPage(page)}
 	if img, ok := r.scaledPages[key]; ok {
 		return img, nil
 	}
-	img, err := r.book.Page(page)
+	img, err := r.pageImage(page)
 	if err != nil {
 		return nil, err
 	}
@@ -319,19 +458,59 @@ func readerFor(handle C.uintptr_t) *reader {
 	return cgo.Handle(handle).Value().(*reader)
 }
 
-//export cbzr_go_native_render
-func cbzr_go_native_render(handle C.uintptr_t, width, height C.int, length *C.size_t, blockedScroll *C.double) unsafe.Pointer {
+//export cbzr_go_native_render_async
+func cbzr_go_native_render_async(handle C.uintptr_t, width, height C.int, view unsafe.Pointer, generation C.uint64_t) {
 	r := readerFor(handle)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	frame := r.frame(int(width), int(height))
-	*blockedScroll = C.double(r.blockedScroll)
-	if frame == nil {
-		*length = 0
-		return nil
+	r.renderAsync(int(width), int(height), func(frame *renderedFrame) {
+		var pixels unsafe.Pointer
+		var length C.size_t
+		var blocked C.double
+		if frame != nil {
+			blocked = C.double(frame.snapshot.blockedScroll)
+			if frame.image != nil {
+				length = C.size_t(len(frame.image.Pix))
+				pixels = C.CBytes(frame.image.Pix)
+				frame.image = nil
+			}
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		var result C.uintptr_t
+		if !r.closed && frame != nil {
+			result = C.uintptr_t(cgo.NewHandle(frame))
+		} else {
+			if frame != nil {
+				frame.cancel()
+			}
+			C.free(pixels)
+			pixels, length = nil, 0
+		}
+		// Enqueue the completion before shutdown can mark the reader closed.
+		C.cbzr_native_frame_done(view, generation, result, pixels, width, height, length, blocked)
+	})
+}
+
+//export cbzr_go_native_cancel_render
+func cbzr_go_native_cancel_render(handle C.uintptr_t) { readerFor(handle).cancelRender() }
+
+//export cbzr_go_native_accept_frame
+func cbzr_go_native_accept_frame(handle C.uintptr_t) C.int {
+	if cgo.Handle(handle).Value().(*renderedFrame).accept() {
+		return 1
 	}
-	*length = C.size_t(len(frame.Pix))
-	return C.CBytes(frame.Pix)
+	return 0
+}
+
+//export cbzr_go_native_show_frame
+func cbzr_go_native_show_frame(handle C.uintptr_t) {
+	cgo.Handle(handle).Value().(*renderedFrame).show()
+}
+
+//export cbzr_go_native_release_frame
+func cbzr_go_native_release_frame(handle C.uintptr_t) {
+	h := cgo.Handle(handle)
+	h.Value().(*renderedFrame).cancel()
+	h.Delete()
 }
 
 //export cbzr_go_native_click
@@ -401,11 +580,11 @@ func cbzr_go_native_event(handle C.uintptr_t, event C.int) {
 	defer r.mu.Unlock()
 	switch int(event) {
 	case eventClear:
-		r.action = ActionClear
+		r.closed, r.action = true, ActionClear
 	case eventSave:
-		r.action = ActionSave
+		r.closed, r.action = true, ActionSave
 	case eventReturn:
-		r.action = ActionReturn
+		r.closed, r.action = true, ActionReturn
 	case eventToggleInversion:
 		r.state.Inverted = !r.state.Inverted
 	case eventToggleWebtoon:
@@ -456,6 +635,14 @@ func cbzr_go_native_event(handle C.uintptr_t, event C.int) {
 		r.pan(-1, 0)
 	case eventPanRight:
 		r.pan(1, 0)
+	}
+	if r.closed {
+		if r.renderCancel != nil {
+			r.renderCancel()
+		}
+		if r.prefetchCancel != nil {
+			r.prefetchCancel()
+		}
 	}
 }
 

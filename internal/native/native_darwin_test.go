@@ -5,6 +5,8 @@ package native
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"errors"
 	"image"
 	"image/png"
 	"math"
@@ -12,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,6 +187,100 @@ func nativeLinkedPDF(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestNativeSlowRenderKeepsInputAndShownPageIndependent(t *testing.T) {
+	path := nativeLinkedPDF(t)
+	converter, err := exec.LookPath("pdftoppm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("slow converter helper needs sh")
+	}
+	dir := t.TempDir()
+	started, release := filepath.Join(dir, "started"), filepath.Join(dir, "release")
+	t.Setenv("CBZR_TEST_NATIVE_STARTED", started)
+	t.Setenv("CBZR_TEST_NATIVE_RELEASE", release)
+	t.Setenv("CBZR_TEST_NATIVE_CONVERTER", converter)
+	script := "#!" + sh + "\nprevious=; page=\n" +
+		"for arg in \"$@\"; do if [ \"$previous\" = -f ]; then page=\"$arg\"; fi; previous=\"$arg\"; done\n" +
+		"if [ \"$page\" = 1 ]; then\n" +
+		"printf started > \"$CBZR_TEST_NATIVE_STARTED\"\n" +
+		"while [ ! -e \"$CBZR_TEST_NATIVE_RELEASE\" ]; do sleep 0.01; done\nfi\n" +
+		"exec \"$CBZR_TEST_NATIVE_CONVERTER\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "pdftoppm"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	b, err := book.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &reader{book: b, state: State{Zoom: 1}, shown: []shownPage{{page: 0}}}
+	done := make(chan *renderedFrame, 2)
+	var work sync.WaitGroup
+	t.Cleanup(func() {
+		os.WriteFile(release, nil, 0o600)
+		b.Close()
+		work.Wait()
+	})
+	start := func() {
+		work.Add(1)
+		go r.renderAsync(100, 80, func(frame *renderedFrame) { done <- frame; work.Done() })
+	}
+	start()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("converter did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	updated := make(chan struct{})
+	go func() {
+		r.mu.Lock()
+		r.goTo(1)
+		r.mu.Unlock()
+		r.cancelRender()
+		close(updated)
+	}()
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		t.Fatal("page input waited for rendering")
+	}
+	var old *renderedFrame
+	select {
+	case old = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("obsolete conversion blocked the replacement page")
+	}
+	if old == nil || !errors.Is(old.snapshot.err, context.Canceled) || old.accept() {
+		t.Fatal("stale render was not canceled")
+	}
+	start()
+	var frame *renderedFrame
+	select {
+	case frame = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("replacement render did not finish")
+	}
+	if frame == nil || frame.image == nil || !frame.accept() {
+		t.Fatal("replacement frame was not accepted")
+	}
+	if r.shown[0].page != 0 {
+		t.Fatal("unpainted frame changed hit testing")
+	}
+	r.goTo(0)
+	frame.show()
+	if r.shown[0].page != 1 || r.state.Page != 0 {
+		t.Fatal("painting changed pending navigation or kept the old hit map")
+	}
 }
 
 func TestNativePDFLinks(t *testing.T) {

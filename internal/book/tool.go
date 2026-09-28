@@ -84,16 +84,20 @@ type toolPage struct {
 func (p toolPage) Name() string { return "page-" + strconv.Itoa(p.page) + ".png" }
 
 func (p toolPage) Open() (io.ReadCloser, error) {
+	return p.open(context.Background())
+}
+
+func (p toolPage) open(ctx context.Context) (io.ReadCloser, error) {
 	n := strconv.Itoa(p.page)
 	var data []byte
 	var err error
 	if p.djvu {
-		data, err = runTool("ddjvu", "-format=ppm", "-size="+renderedPageSize+"x"+renderedPageSize, "-page="+n, p.path)
+		data, err = runToolContext(ctx, "ddjvu", "-format=ppm", "-size="+renderedPageSize+"x"+renderedPageSize, "-page="+n, p.path)
 		if err == nil {
 			data, err = ppmToPNG(data)
 		}
 	} else {
-		data, err = runTool("pdftoppm", "-png", "-cropbox", "-scale-to", renderedPageSize, "-f", n, "-l", n, "-singlefile", p.path)
+		data, err = runToolContext(ctx, "pdftoppm", "-png", "-cropbox", "-scale-to", renderedPageSize, "-f", n, "-l", n, "-singlefile", p.path)
 	}
 	if err != nil {
 		return nil, err

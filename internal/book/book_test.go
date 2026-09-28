@@ -3,6 +3,7 @@ package book
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"image"
 	"image/png"
@@ -248,14 +249,84 @@ func TestPageLoadsDoNotBlockOtherPages(t *testing.T) {
 	}
 }
 
+func TestCanceledPageWaitLeavesSharedLoadRunning(t *testing.T) {
+	e := &countedPage{memEntry: memEntry{"page.png", epubImage(t)}, started: make(chan struct{}), release: make(chan struct{})}
+	b := newBook("book", false)
+	b.pages = []entry{e}
+	loaded := make(chan error, 1)
+	go func() { _, err := b.Page(0); loaded <- err }()
+	t.Cleanup(func() {
+		close(e.release)
+		if err := <-loaded; err != nil {
+			t.Errorf("shared load failed: %v", err)
+		}
+		b.Close()
+	})
+	<-e.started
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiting := make(chan error, 1)
+	go func() { _, err := b.PageContext(ctx, 0); waiting <- err }()
+	cancel()
+	select {
+	case err := <-waiting:
+		if err != context.Canceled {
+			t.Fatalf("canceled wait: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("obsolete request waited for another page load")
+	}
+	if e.opens.Load() != 1 {
+		t.Fatal("canceled waiter started a duplicate load")
+	}
+}
+
+type cancelingPage struct {
+	data   []byte
+	cancel context.CancelFunc
+	reads  int
+	closed bool
+}
+
+func (p *cancelingPage) Name() string                 { return "page.png" }
+func (p *cancelingPage) Open() (io.ReadCloser, error) { return p, nil }
+func (p *cancelingPage) Close() error                 { p.closed = true; return nil }
+func (p *cancelingPage) Read(dst []byte) (int, error) {
+	p.reads++
+	if p.reads > 1 {
+		return 0, io.EOF
+	}
+	p.cancel()
+	return copy(dst, p.data), nil
+}
+
+func TestPageContextStopsArchiveReads(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	page := &cancelingPage{data: epubImage(t), cancel: cancel}
+	b := &Book{pages: []entry{page}}
+	if _, err := b.PageContext(ctx, 0); err != context.Canceled {
+		t.Fatalf("canceled page: %v", err)
+	}
+	if page.reads != 1 || !page.closed || len(b.loading) != 0 || len(b.cache) != 0 {
+		t.Fatal("canceled archive read continued or retained its load slot")
+	}
+	if _, err := (epubTextPage{}).open(ctx); err != context.Canceled {
+		t.Fatalf("canceled text page: %v", err)
+	}
+}
+
 func TestPageCacheByteLimit(t *testing.T) {
 	data := make([]byte, maxPageBytes/2+1)
 	copy(data, epubImage(t))
 	b := newBook("book", false)
 	b.pages = []entry{memEntry{"one.png", data}, memEntry{"two.png", data}}
 	for i := range b.pages {
-		unlock := b.lockPage(i)
-		_, _, err := b.pageBytes(i)
+		unlock, err := b.lockPage(context.Background(), i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = b.pageBytes(context.Background(), i)
 		unlock()
 		if err != nil {
 			t.Fatal(err)

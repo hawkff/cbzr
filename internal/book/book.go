@@ -67,8 +67,8 @@ type Book struct {
 	layers       map[int][]textLine // immutable text layers by page
 	layerOrder   []int
 	layerLoading map[int]chan struct{}
-	textContext  context.Context
-	cancelText   context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
 	closed       bool
 }
 
@@ -213,11 +213,11 @@ func Open(path string) (*Book, error) {
 	}, nil
 }
 
-// Close cancels text extraction and releases the underlying archive.
+// Close cancels converters and releases the underlying archive.
 func (b *Book) Close() error {
 	b.mu.Lock()
 	b.closed = true
-	cancel, arc := b.cancelText, b.arc
+	cancel, arc := b.cancel, b.arc
 	b.arc = nil
 	b.mu.Unlock()
 	if cancel != nil {
@@ -227,6 +227,14 @@ func (b *Book) Close() error {
 		return arc.Close()
 	}
 	return nil
+}
+
+// contextLocked requires b.mu.
+func (b *Book) contextLocked() context.Context {
+	if b.ctx == nil {
+		b.ctx, b.cancel = context.WithCancel(context.Background())
+	}
+	return b.ctx
 }
 
 // Len returns the number of pages.
@@ -239,12 +247,19 @@ func (b *Book) CanInvertPage(i int) bool {
 }
 
 // lockPage serializes one page's loads without blocking other pages.
-func (b *Book) lockPage(i int) func() {
+func (b *Book) lockPage(ctx context.Context, i int) (func(), error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		b.mu.Lock()
 		if done := b.loading[i]; done != nil {
 			b.mu.Unlock()
-			<-done
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 			continue
 		}
 		if b.loading == nil {
@@ -258,7 +273,7 @@ func (b *Book) lockPage(i int) func() {
 			delete(b.loading, i)
 			close(done)
 			b.mu.Unlock()
-		}
+		}, nil
 	}
 }
 
@@ -268,39 +283,66 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
 	cached, ok := b.encoded[i]
 	b.mu.Unlock()
 	if ok {
 		return bytes.Clone(cached.data), cached.mime, nil
 	}
-	unlock := b.lockPage(i)
+	unlock, err := b.lockPage(context.Background(), i)
+	if err != nil {
+		return nil, "", err
+	}
 	defer unlock()
-	data, mime, err := b.pageBytes(i)
+	data, mime, err := b.pageBytes(context.Background(), i)
 	return bytes.Clone(data), mime, err
 }
 
-// pageBytes requires lockPage(i). The cache holds at most eight pages and maxPageBytes.
-func (b *Book) pageBytes(i int) ([]byte, string, error) {
+// pageBytes requires lockPage. The cache holds at most eight pages and maxPageBytes.
+func (b *Book) pageBytes(ctx context.Context, i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
 	cached, ok := b.encoded[i]
+	bookContext := b.contextLocked()
 	b.mu.Unlock()
 	if ok {
 		return cached.data, cached.mime, nil
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(bookContext, cancel)
+	defer func() { stop(); cancel() }()
 	e := b.pages[i]
-	r, err := e.Open()
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	var r io.ReadCloser
+	var err error
+	switch p := e.(type) {
+	case toolPage:
+		r, err = p.open(ctx)
+	case epubTextPage:
+		r, err = p.open(ctx)
+	default:
+		r, err = e.Open()
+	}
 	if err != nil {
 		return nil, "", err
 	}
 	defer r.Close()
-	data, err := readBounded(r, maxPageBytes)
+	data, err := readBounded(contextReader{ctx, r}, maxPageBytes)
 	if err != nil {
 		return nil, "", err
 	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	config, format, err := image.DecodeConfig(contextReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return nil, "", fmt.Errorf("decode page %d: %w", i+1, err)
 	}
@@ -309,6 +351,10 @@ func (b *Book) pageBytes(i int) ([]byte, string, error) {
 	}
 	mime := "image/" + format
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
 	if b.encoded == nil {
 		b.encoded = make(map[int]encodedPage)
 	}
@@ -327,34 +373,61 @@ func (b *Book) pageBytes(i int) ([]byte, string, error) {
 
 // Page decodes page i, using a small in-memory cache.
 func (b *Book) Page(i int) (image.Image, error) {
+	return b.PageContext(context.Background(), i)
+}
+
+// PageContext cancels converters and checks cancellation between archive reads,
+// text rendering steps, and image decoder reads. Completed pages share the cache.
+func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if i < 0 || i >= len(b.pages) {
 		return nil, fmt.Errorf("page %d out of range", i)
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, os.ErrClosed
+	}
 	if img, ok := b.cache[i]; ok {
 		b.mu.Unlock()
 		return img, nil
 	}
 	b.mu.Unlock()
 
-	unlock := b.lockPage(i)
+	unlock, err := b.lockPage(ctx, i)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, os.ErrClosed
+	}
 	if img, ok := b.cache[i]; ok {
 		b.mu.Unlock()
 		return img, nil
 	}
 	b.mu.Unlock()
-	data, _, err := b.pageBytes(i)
+	data, _, err := b.pageBytes(ctx, i)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		return nil, err
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+	img, _, err := image.Decode(contextReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return nil, fmt.Errorf("decode page %d: %w", i+1, err)
 	}
 
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, os.ErrClosed
+	}
 	if b.cache == nil {
 		b.cache = make(map[int]image.Image)
 	}
@@ -369,6 +442,30 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 	b.mu.Unlock()
 	return img, nil
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+type contextWriter struct {
+	ctx context.Context
+	w   io.Writer
+}
+
+func (w contextWriter) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return w.w.Write(p)
 }
 
 func readEntry(e entry, limit int64) ([]byte, error) {
