@@ -862,6 +862,7 @@ func TestEPUBInversionLeavesIllustrationsUnchanged(t *testing.T) {
 func TestCleanURLStripsTrackingParameters(t *testing.T) {
 	for raw, want := range map[string]string{
 		"https://example.com/a?utm_source=x&id=7&fbclid=abc":    "https://example.com/a?id=7",
+		"https://example.com/a?utm%5Fsource=x&id=7":             "https://example.com/a?id=7",
 		"https://example.com/a?UTM_Campaign=x":                  "https://example.com/a",
 		"https://example.com/a?b=1&a=2#frag":                    "https://example.com/a?b=1&a=2#frag",
 		"https://youtu.be/id?si=track":                          "https://youtu.be/id",
@@ -923,6 +924,11 @@ func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
 	if _, ok := m.hitAt(0, 0); ok {
 		t.Fatal("the title row maps to the page")
 	}
+	m.panes[0].page = 2 // a page turn in flight still shows page 0
+	if h, ok := m.hitAt(lx, ly); !ok || h.page != 0 {
+		t.Fatalf("hit during a page turn: %#v %v", h, ok)
+	}
+	m.panes[0].page = 0
 
 	apply(tea.MouseMsg{X: lx, Y: ly, Action: tea.MouseActionMotion})
 	if !strings.Contains(m.statusView(), "→ https://example.com/read?id=7") {

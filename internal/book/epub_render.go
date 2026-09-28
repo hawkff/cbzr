@@ -180,7 +180,7 @@ type epubLayout struct {
 	segmenter                         shaping.Segmenter
 	lines                             []epubLine
 	y                                 int
-	pending                           []string // anchors waiting for their content to land on a page
+	pending                           []epubAnchor // ids waiting for their content to land on a page
 	activeImages                      map[string]bool
 }
 
@@ -200,19 +200,31 @@ func (l *epubLayout) anchor(key string, page int) {
 	l.book.anchors[key] = page
 }
 
-// place resolves the anchors seen since the last placed content to the page
-// that receives the next line or image.
-func (l *epubLayout) place() {
-	for _, key := range l.pending {
-		l.anchor(key, len(l.book.pages))
+// epubAnchor is an element id seen at a rune offset of the paragraph under
+// construction; it resolves to the page of the line that holds the offset.
+type epubAnchor struct {
+	key string
+	at  int
+}
+
+// place resolves pending anchors before a paragraph offset, or all of them,
+// to the page that receives the current line or image.
+func (l *epubLayout) place(upTo int, all bool) {
+	kept := l.pending[:0]
+	for _, a := range l.pending {
+		if all || a.at < upTo {
+			l.anchor(a.key, len(l.book.pages))
+		} else {
+			kept = append(kept, a)
+		}
 	}
-	l.pending = nil
+	l.pending = kept
 }
 
 // settle points anchors after the last content of a document at its last page.
 func (l *epubLayout) settle() {
-	for _, key := range l.pending {
-		l.anchor(key, max(0, len(l.book.pages)-1))
+	for _, a := range l.pending {
+		l.anchor(a.key, max(0, len(l.book.pages)-1))
 	}
 	l.pending = nil
 }
@@ -272,7 +284,7 @@ func (l *epubLayout) addImage(e *epubPackage, name string, resources map[string]
 	if err := l.flushPage(); err != nil {
 		return err
 	}
-	l.place()
+	l.place(0, true)
 	return l.addPage(e.files[name])
 }
 func epubBlock(name string) bool {
@@ -400,13 +412,16 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			defer func() { bullet = false }()
 		}
 		if id := n.attr("id"); id != "" {
-			l.pending = append(l.pending, name+"#"+id)
+			l.pending = append(l.pending, epubAnchor{name + "#" + id, len(text.runes)})
 		}
 		if n.name.Local == "a" {
 			if id := n.attr("name"); id != "" {
-				l.pending = append(l.pending, name+"#"+id)
+				l.pending = append(l.pending, epubAnchor{name + "#" + id, len(text.runes)})
 			}
 			if target, internal, ok := epubLinkTarget(name, n.attr("href")); ok {
+				if n.allText() != "" {
+					marker() // a list bullet is not part of the link
+				}
 				links = append(links, epubLink{start: len(text.runes), href: target, internal: internal})
 				defer func() {
 					link := links[len(links)-1]

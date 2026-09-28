@@ -561,7 +561,7 @@ func TestEPUBLinkLabelsAndLatinNormalization(t *testing.T) {
 func TestEPUBSelectionAndLinks(t *testing.T) {
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", `<p><a href="https://example.com/a?utm_source=x">Second</a> <a href="a.xhtml#note">paragraph</a>.</p><span id="ztail"/>`)
-	replaceEPUB(entries, "OPS/text/a.xhtml", "<p>Last note.</p>", `<p id="note">Last <a href="z.xhtml#missing">note</a> <a href="javascript:alert(1)">x</a>.</p><span id="tail"/>`)
+	replaceEPUB(entries, "OPS/text/a.xhtml", "<p>Last note.</p>", `<p id="note">Last <a href="z.xhtml#missing">note</a> <a href="javascript:alert(1)">x</a>.</p><ul><li><a href="https://example.com/li">item</a></li></ul><p>`+strings.Repeat("word ", 300)+`<span id="deep"/>tail</p><span id="tail"/>`)
 	b, err := Open(writeEPUB(t, entries, ".epub"))
 	if err != nil {
 		t.Fatal(err)
@@ -606,13 +606,33 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 	if _, ok := b.LinkAt(2, 0.5, 0.5); ok {
 		t.Fatal("link on a missing page")
 	}
-	if b.anchors["OPS/text/a.xhtml#tail"] != 1 || b.anchors["OPS/text/a.xhtml"] != 1 || b.anchors["OPS/text/z.xhtml"] != 0 || b.anchors["OPS/text/z.xhtml#ztail"] != 0 || len(b.anchors) != 5 {
+	if item := b.textLines(1)[1]; item.text != "\u2022 item" || !reflect.DeepEqual(item.links, []epubLink{{2, 6, "https://example.com/li", false}}) {
+		t.Fatalf("list item link: %q %#v", item.text, item.links)
+	}
+	want := map[string]int{"OPS/text/z.xhtml": 0, "OPS/text/z.xhtml#ztail": 0, "OPS/text/a.xhtml": 1, "OPS/text/a.xhtml#note": 1, "OPS/text/a.xhtml#deep": 2, "OPS/text/a.xhtml#tail": 2}
+	if b.Len() != 3 || !reflect.DeepEqual(b.anchors, want) {
 		t.Fatalf("anchors: %v", b.anchors)
 	}
+	for _, tc := range []struct {
+		href, target string
+		internal, ok bool
+	}{
+		{"a.xhtml#sec%3A2", "OPS/text/a.xhtml#sec:2", true, true},
+		{"#n1", "OPS/text/z.xhtml#n1", true, true},
+		{" HTTPS://example.com/?q=1 ", "HTTPS://example.com/?q=1", false, true},
+		{"mailto:someone@example.com", "mailto:someone@example.com", false, true},
+		{"file:///etc/passwd", "", false, false},
+		{"../../../evil.xhtml", "", false, false},
+		{"", "", false, false},
+	} {
+		if target, internal, ok := epubLinkTarget("OPS/text/z.xhtml", tc.href); target != tc.target || internal != tc.internal || ok != tc.ok {
+			t.Fatalf("link target %q: %q %v %v", tc.href, target, internal, ok)
+		}
+	}
 
-	want := "First heading\nHello reader & friends.\nSecond paragraph."
+	page := "First heading\nHello reader & friends.\nSecond paragraph."
 	text, rects := b.Select(0, 0, 0, 1, 1)
-	if text != want || len(rects) != len(lines) {
+	if text != page || len(rects) != len(lines) {
 		t.Fatalf("page selection: %q %v", text, rects)
 	}
 	for i, r := range rects {
@@ -620,7 +640,7 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 			t.Fatalf("rect %d: %v", i, r)
 		}
 	}
-	if back, _ := b.Select(0, 1, 1, 0, 0); back != want {
+	if back, _ := b.Select(0, 1, 1, 0, 0); back != page {
 		t.Fatalf("reversed selection: %q", back)
 	}
 	x, y := at(last, 0)

@@ -369,9 +369,7 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 				return err
 			}
 		}
-		if start == 0 {
-			l.place()
-		}
+		l.place(wrapped.NextLine, done)
 		for i := range line.annotations {
 			line.annotations[i].y += l.y
 		}

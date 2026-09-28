@@ -57,12 +57,12 @@ func (m Model) slotBox(i, slot int) image.Rectangle {
 	return image.Rect(x0, y0, x0+w, y0+h)
 }
 
-// pageFraction maps a cell to fractions of the text page in a slot. With
-// snap, cells outside the image move to its edge so a drag can run past it.
-// Rotated, webtoon and plain-text pages have no mapping.
+// pageFraction maps a cell to fractions of the text page shown in a slot.
+// With snap, cells outside the image move to its edge so a drag can run past
+// it. Rotated, webtoon and plain-text pages have no mapping.
 func (m Model) pageFraction(i, slot, x, y int, snap bool) (float64, float64, bool) {
 	p := m.panes[i]
-	res, page := p.res, p.page+slot
+	res, page := p.res, p.shown+slot
 	if slot == 1 {
 		res = p.res2
 	}
@@ -97,7 +97,7 @@ func (m Model) hitAt(x, y int) (hit, bool) {
 				continue
 			}
 			fx, fy, ok := m.pageFraction(i, slot, x, y, false)
-			return hit{pane: i, slot: slot, page: m.panes[i].page + slot, x: fx, y: fy}, ok
+			return hit{pane: i, slot: slot, page: m.panes[i].shown + slot, x: fx, y: fy}, ok
 		}
 	}
 	return hit{}, false
@@ -237,6 +237,9 @@ func cleanURL(raw string) string {
 	var kept []string
 	for _, pair := range strings.Split(u.RawQuery, "&") {
 		key, _, _ := strings.Cut(pair, "=")
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			key = decoded
+		}
 		key = strings.ToLower(key)
 		tracking := trackingParams[key]
 		for _, prefix := range trackingPrefixes {

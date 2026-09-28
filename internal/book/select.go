@@ -37,14 +37,14 @@ func epubLinkTarget(name, href string) (target string, internal, ok bool) {
 		}
 		return "", false, false
 	}
-	doc, fragment, _ := strings.Cut(href, "#")
+	doc, _, _ := strings.Cut(href, "#")
 	if doc == "" {
 		doc = name
 	} else if doc, err = epubPath(name, doc); err != nil {
 		return "", false, false
 	}
-	if fragment != "" {
-		doc += "#" + fragment
+	if u.Fragment != "" {
+		doc += "#" + u.Fragment // decoded, as ids are
 	}
 	return doc, true, true
 }
