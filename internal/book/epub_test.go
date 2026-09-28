@@ -603,7 +603,7 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 	if _, ok := linkAt(1, notes, 10); ok || len(notes.links) != 1 {
 		t.Fatalf("script link survived: %#v", notes.links)
 	}
-	if _, ok := b.LinkAt(2, 0.5, 0.5); ok {
+	if _, ok := b.LinkAt(3, 0.5, 0.5); ok {
 		t.Fatal("link on a missing page")
 	}
 	if item := b.textLines(1)[1]; item.text != "\u2022 item" || !reflect.DeepEqual(item.links, []epubLink{{2, 6, "https://example.com/li", false}}) {
@@ -654,7 +654,7 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 	if text, rects := b.Select(0, x, y, x, y); text != "" || rects != nil {
 		t.Fatalf("empty selection: %q %v", text, rects)
 	}
-	if text, rects := b.Select(2, 0, 0, 1, 1); text != "" || rects != nil {
+	if text, rects := b.Select(3, 0, 0, 1, 1); text != "" || rects != nil {
 		t.Fatalf("missing page selection: %q %v", text, rects)
 	}
 }
