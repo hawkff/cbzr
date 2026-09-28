@@ -35,7 +35,11 @@ func (d *toolDiagnostics) Write(p []byte) (int, error) {
 // runTool runs an external converter and returns its standard output, which
 // may not exceed maxPageBytes.
 func runTool(name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
+	return runToolContext(context.Background(), name, args...)
+}
+
+func runToolContext(ctx context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, toolTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	var diagnostics toolDiagnostics

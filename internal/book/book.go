@@ -2,6 +2,7 @@ package book
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -66,6 +67,9 @@ type Book struct {
 	layers       map[int][]textLine // immutable text layers by page
 	layerOrder   []int
 	layerLoading map[int]chan struct{}
+	textContext  context.Context
+	cancelText   context.CancelFunc
+	closed       bool
 }
 
 type encodedPage struct {
@@ -209,14 +213,20 @@ func Open(path string) (*Book, error) {
 	}, nil
 }
 
-// Close releases the underlying archive.
+// Close cancels text extraction and releases the underlying archive.
 func (b *Book) Close() error {
-	if b.arc == nil {
-		return nil
-	}
-	err := b.arc.Close()
+	b.mu.Lock()
+	b.closed = true
+	cancel, arc := b.cancelText, b.arc
 	b.arc = nil
-	return err
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if arc != nil {
+		return arc.Close()
+	}
+	return nil
 }
 
 // Len returns the number of pages.

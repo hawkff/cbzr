@@ -76,6 +76,18 @@ int main(void) {
   [view mouseDragged:mouse(NSEventTypeLeftMouseDragged)];
   [view mouseUp:mouse(NSEventTypeLeftMouseUp)];
   assert(linkRequests == 1);
+  webtoon = 1;
+  [view queueScroll:800];
+  [view mouseDown:mouse(NSEventTypeLeftMouseDown)];
+  [view mouseUp:mouse(NSEventTypeLeftMouseUp)];
+  assert(view.animationTimer != nil);
+  completeLink(-1);
+  assert(view.animationTimer != nil && view.pendingScroll > 0 && linkPage == 7);
+  [view mouseDown:mouse(NSEventTypeLeftMouseDown)];
+  [view mouseUp:mouse(NSEventTypeLeftMouseUp)];
+  completeLink(7);
+  assert(view.animationTimer == nil && view.pendingScroll == 0);
+  webtoon = 0;
   [view mouseDown:mouse(NSEventTypeLeftMouseDown)];
   [view mouseUp:mouse(NSEventTypeLeftMouseUp)];
   [view keyDown:key(@"g")];

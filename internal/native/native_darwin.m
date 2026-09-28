@@ -166,7 +166,6 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     NSRect bounds = self.bounds;
     if (!NSPointInRect(point, bounds) || NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0 ||
         hypot(point.x - self.mousePoint.x, point.y - self.mousePoint.y) > 4) return;
-    [self cancelScroll];
     // The completion releases this retain even if the window closes meanwhile.
     void *context = (__bridge_retained void *)self;
     cbzr_go_native_click(self.handle,
@@ -399,6 +398,7 @@ void cbzr_native_link_done(void *context, uint64_t generation, int page, const c
             } else if (destination) {
                 NSURL *target = [NSURL URLWithString:destination];
                 if (target && [@[@"http", @"https", @"mailto"] containsObject:target.scheme.lowercaseString]) {
+                    [view cancelScroll];
                     [NSWorkspace.sharedWorkspace openURL:target];
                 }
             }

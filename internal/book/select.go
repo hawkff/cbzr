@@ -1,6 +1,7 @@
 package book
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 	"strings"
@@ -113,6 +114,10 @@ func (b *Book) PrepareText(i int) {
 	}
 	for {
 		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return
+		}
 		if _, ok := b.layers[i]; ok {
 			b.mu.Unlock()
 			return
@@ -127,6 +132,10 @@ func (b *Book) PrepareText(i int) {
 		}
 		done := make(chan struct{})
 		b.layerLoading[i] = done
+		if b.textContext == nil {
+			b.textContext, b.cancelText = context.WithCancel(context.Background())
+		}
+		ctx := b.textContext
 		b.mu.Unlock()
 
 		var lines []textLine
@@ -134,18 +143,20 @@ func (b *Book) PrepareText(i int) {
 		case epubTextPage:
 			lines = p.textLines()
 		case toolPage:
-			lines = pdfTextLayer(p.path, p.page)
+			lines = pdfTextLayer(ctx, p.path, p.page)
 		}
 
 		b.mu.Lock()
-		if b.layers == nil {
-			b.layers = make(map[int][]textLine)
-		}
-		b.layers[i] = lines
-		b.layerOrder = append(b.layerOrder, i)
-		for len(b.layerOrder) > maxTextLayers {
-			delete(b.layers, b.layerOrder[0])
-			b.layerOrder = b.layerOrder[1:]
+		if !b.closed {
+			if b.layers == nil {
+				b.layers = make(map[int][]textLine)
+			}
+			b.layers[i] = lines
+			b.layerOrder = append(b.layerOrder, i)
+			for len(b.layerOrder) > maxTextLayers {
+				delete(b.layers, b.layerOrder[0])
+				b.layerOrder = b.layerOrder[1:]
+			}
 		}
 		delete(b.layerLoading, i)
 		close(done)
