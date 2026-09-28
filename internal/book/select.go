@@ -1,23 +1,26 @@
 package book
 
 import (
-	"image"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/go-text/typesetting/di"
 	"golang.org/x/image/math/fixed"
 )
 
-// Link is a hyperlink on a text page: an external URL, or the page a
-// reference inside the book leads to.
+// Link is a hyperlink on a page: an external URL, or the page a reference
+// inside the book leads to.
 type Link struct {
 	URL  string
 	Page int // -1 for external links
 }
 
+// Box is a rectangle in fractions of the page width and height.
+type Box struct{ X0, Y0, X1, Y1 float64 }
+
 type epubLink struct {
-	start, end int    // paragraph rune range
+	start, end int    // rune range
 	href       string // URL, or the anchor key of an internal reference
 	internal   bool
 }
@@ -49,14 +52,58 @@ func epubLinkTarget(name, href string) (target string, internal, ok bool) {
 	return doc, true, true
 }
 
-func (b *Book) textLines(i int) []epubLine {
-	if !b.IsTextPage(i) {
-		return nil
-	}
-	return b.pages[i].(epubTextPage).lines
+// textBox is a glyph or word on a line, in page fractions.
+type textBox struct {
+	x0, x1       float64
+	index, count int // rune range in the line text
+	rtl          bool
 }
 
-func epubPageX(x float64) fixed.Int26_6 { return fixed.Int26_6(x * epubPageWidth * 64) }
+// textLine is one line of selectable text on a page, in page fractions.
+type textLine struct {
+	text        string
+	top, bottom float64
+	end         bool // last line of its paragraph
+	boxes       []textBox
+	links       []epubLink // rune ranges in text
+}
+
+// Selectable reports whether page i carries a text layer: a page laid out
+// from book text, or a PDF page.
+func (b *Book) Selectable(i int) bool {
+	if i < 0 || i >= len(b.pages) {
+		return false
+	}
+	switch p := b.pages[i].(type) {
+	case epubTextPage:
+		return true
+	case toolPage:
+		return !p.djvu
+	}
+	return false
+}
+
+// lines returns the text layer of page i, extracting it on first use.
+func (b *Book) lines(i int) []textLine {
+	if i < 0 || i >= len(b.pages) {
+		return nil
+	}
+	switch p := b.pages[i].(type) {
+	case epubTextPage:
+		return p.textLines()
+	case toolPage:
+		if !p.djvu {
+			return b.pdfLines(i, p)
+		}
+	}
+	return nil
+}
+
+// PrepareText extracts the text layer of page i so that later hits on it
+// do not wait for external tools.
+func (b *Book) PrepareText(i int) { b.lines(i) }
+
+func epubFraction(x fixed.Int26_6) float64 { return float64(x) / 64 / epubPageWidth }
 
 // epubLineBox returns the vertical page extent of a line.
 func epubLineBox(line epubLine) (top, bottom int) {
@@ -64,126 +111,140 @@ func epubLineBox(line epubLine) (top, bottom int) {
 	return line.y - ascent, line.y + descent
 }
 
-// epubLineAt picks the first line that ends at or below y, else the last.
-func epubLineAt(lines []epubLine, y int) int {
+// textLines converts the laid-out glyphs to the page-fraction model.
+func (p epubTextPage) textLines() []textLine {
+	lines := make([]textLine, 0, len(p.lines))
+	for _, line := range p.lines {
+		top, bottom := epubLineBox(line)
+		out := textLine{text: line.text, top: float64(top) / epubPageHeight, bottom: float64(bottom) / epubPageHeight, end: line.end}
+		for _, run := range line.runs {
+			x := fixed.I(epubMargin) + run.x
+			rtl := run.Direction.Progression() == di.TowardTopLeft
+			for _, glyph := range run.Glyphs {
+				out.boxes = append(out.boxes, textBox{epubFraction(x), epubFraction(x + glyph.Advance), glyph.TextIndex() - line.offset, glyph.RunesCount(), rtl})
+				x += glyph.Advance
+			}
+		}
+		for _, link := range line.links {
+			out.links = append(out.links, epubLink{link.start - line.offset, link.end - line.offset, link.href, link.internal})
+		}
+		lines = append(lines, out)
+	}
+	return lines
+}
+
+// lineAt picks the first line that ends at or below y, else the last.
+func lineAt(lines []textLine, y float64) int {
 	for i, line := range lines {
-		if _, bottom := epubLineBox(line); y <= bottom {
+		if y <= line.bottom {
 			return i
 		}
 	}
 	return len(lines) - 1
 }
 
-// epubGlyphs visits the glyphs of a line with their horizontal page extent
-// and paragraph rune range.
-func epubGlyphs(line epubLine, visit func(x0, x1 fixed.Int26_6, index, count int, rtl bool)) {
-	for _, run := range line.runs {
-		x := fixed.I(epubMargin) + run.x
-		rtl := run.Direction.Progression() == di.TowardTopLeft
-		for _, glyph := range run.Glyphs {
-			visit(x, x+glyph.Advance, glyph.TextIndex(), glyph.RunesCount(), rtl)
-			x += glyph.Advance
+// span returns the horizontal extent of the boxes in a rune range.
+func span(line textLine, from, to int) (x0, x1 float64, ok bool) {
+	for _, box := range line.boxes {
+		if box.index >= to || box.index+box.count <= from {
+			continue
 		}
-	}
-}
-
-// epubSpan returns the horizontal extent of the glyphs in a rune range.
-func epubSpan(line epubLine, from, to int) (x0, x1 fixed.Int26_6, ok bool) {
-	epubGlyphs(line, func(gx0, gx1 fixed.Int26_6, index, count int, _ bool) {
-		if index >= to || index+count <= from {
-			return
+		if !ok || box.x0 < x0 {
+			x0 = box.x0
 		}
-		if !ok || gx0 < x0 {
-			x0 = gx0
-		}
-		if !ok || gx1 > x1 {
-			x1 = gx1
+		if !ok || box.x1 > x1 {
+			x1 = box.x1
 		}
 		ok = true
-	})
+	}
 	return
 }
 
-type epubCaretPos struct{ line, index int }
+type caretPos struct{ line, index int }
 
-// epubCaret locates the rune boundary nearest to a point given as page
-// fractions: a line and a paragraph rune index.
-func epubCaret(lines []epubLine, x, y float64) epubCaretPos {
-	n := epubLineAt(lines, int(y*epubPageHeight))
-	line := lines[n]
-	px := epubPageX(x)
-	index, best := line.offset, fixed.Int26_6(-1)
-	epubGlyphs(line, func(x0, x1 fixed.Int26_6, at, count int, rtl bool) {
-		d := max(x0-px, px-x1, 0)
+// caretAt locates the rune boundary nearest to a point: a line and a rune
+// index in its text.
+func caretAt(lines []textLine, x, y float64) caretPos {
+	n := lineAt(lines, y)
+	index, best := 0, -1.0
+	for _, box := range lines[n].boxes {
+		d := max(box.x0-x, x-box.x1, 0)
 		if best >= 0 && d >= best {
-			return
+			continue
 		}
 		best = d
-		after := px > (x0+x1)/2
-		if rtl {
+		after := x > (box.x0+box.x1)/2
+		if box.rtl {
 			after = !after
 		}
-		index = at
+		index = box.index
 		if after {
-			index += count
+			index += box.count
 		}
-	})
-	return epubCaretPos{n, index}
+	}
+	return caretPos{n, index}
 }
 
-// LinkAt returns the link under a point of a text page, given as fractions
-// of the page width and height.
+// LinkAt returns the link under a point of a page, given as fractions of
+// the page width and height.
 func (b *Book) LinkAt(i int, x, y float64) (Link, bool) {
-	lines := b.textLines(i)
+	lines := b.lines(i)
 	if len(lines) == 0 {
 		return Link{}, false
 	}
-	py := int(y * epubPageHeight)
-	line := lines[epubLineAt(lines, py)]
-	if top, bottom := epubLineBox(line); py < top || py > bottom {
+	line := lines[lineAt(lines, y)]
+	if y < line.top || y > line.bottom {
 		return Link{}, false
 	}
-	px := epubPageX(x)
 	index := -1
-	epubGlyphs(line, func(x0, x1 fixed.Int26_6, at, _ int, _ bool) {
-		if px >= x0 && px < x1 {
-			index = at
+	for _, box := range line.boxes {
+		if x >= box.x0 && x < box.x1 {
+			index = box.index
 		}
-	})
+	}
 	for _, link := range line.links {
-		if index < link.start || index >= link.end {
-			continue
+		if index >= link.start && index < link.end {
+			return b.resolve(link)
 		}
-		if !link.internal {
-			return Link{URL: link.href, Page: -1}, true
-		}
-		if page, ok := b.anchors[link.href]; ok {
-			return Link{Page: page}, true
-		}
-		doc, _, _ := strings.Cut(link.href, "#")
-		page, ok := b.anchors[doc]
-		return Link{Page: page}, ok
 	}
 	return Link{}, false
 }
 
-// Select returns the text between two points of a text page, given as page
-// fractions, in reading order, with the page rectangles it covers.
-func (b *Book) Select(i int, x0, y0, x1, y1 float64) (string, []image.Rectangle) {
-	lines := b.textLines(i)
+func (b *Book) resolve(link epubLink) (Link, bool) {
+	if !link.internal {
+		return Link{URL: link.href, Page: -1}, true
+	}
+	if page, ok := b.anchors[link.href]; ok {
+		return Link{Page: page}, true
+	}
+	doc, fragment, _ := strings.Cut(link.href, "#")
+	if page, ok := b.anchors[doc]; ok {
+		return Link{Page: page}, true
+	}
+	// PDF references name their page.
+	if n, err := strconv.Atoi(fragment); err == nil && doc == "" && n >= 1 && n <= len(b.pages) {
+		return Link{Page: n - 1}, true
+	}
+	return Link{}, false
+}
+
+// Select returns the text between two points of a page, given as page
+// fractions, in reading order, with the boxes it covers.
+func (b *Book) Select(i int, x0, y0, x1, y1 float64) (string, []Box) {
+	lines := b.lines(i)
 	if len(lines) == 0 {
 		return "", nil
 	}
-	from, to := epubCaret(lines, x0, y0), epubCaret(lines, x1, y1)
+	from, to := caretAt(lines, x0, y0), caretAt(lines, x1, y1)
 	if to.line < from.line || to.line == from.line && to.index < from.index {
 		from, to = to, from
 	}
 	var text strings.Builder
-	var rects []image.Rectangle
+	var boxes []Box
 	for n := from.line; n <= to.line; n++ {
 		line := lines[n]
 		runes := []rune(line.text)
-		lo, hi := line.offset, line.offset+len(runes)
+		lo, hi := 0, len(runes)
 		if n == from.line {
 			lo = max(lo, from.index)
 		}
@@ -193,14 +254,13 @@ func (b *Book) Select(i int, x0, y0, x1, y1 float64) (string, []image.Rectangle)
 		if lo >= hi {
 			continue
 		}
-		text.WriteString(string(runes[lo-line.offset : hi-line.offset]))
+		text.WriteString(string(runes[lo:hi]))
 		if line.end && n < to.line {
 			text.WriteString("\n")
 		}
-		if sx0, sx1, ok := epubSpan(line, lo, hi); ok {
-			top, bottom := epubLineBox(line)
-			rects = append(rects, image.Rect(sx0.Floor(), top, sx1.Ceil(), bottom))
+		if sx0, sx1, ok := span(line, lo, hi); ok {
+			boxes = append(boxes, Box{sx0, line.top, sx1, line.bottom})
 		}
 	}
-	return strings.Trim(text.String(), " "), rects
+	return strings.Trim(text.String(), " "), boxes
 }

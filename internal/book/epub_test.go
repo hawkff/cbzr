@@ -567,19 +567,19 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	// at returns page fractions two pixels into the glyph of rune n, on the baseline.
-	at := func(line epubLine, n int) (float64, float64) {
-		x0, _, ok := epubSpan(line, line.offset+n, line.offset+n+1)
+	// at returns page fractions two pixels into the glyph of rune n, mid-line.
+	at := func(line textLine, n int) (float64, float64) {
+		x0, _, ok := span(line, n, n+1)
 		if !ok {
 			t.Fatalf("rune %d of %q has no glyph", n, line.text)
 		}
-		return (float64(x0.Round()) + 2) / epubPageWidth, float64(line.y-1) / epubPageHeight
+		return x0 + 2.0/epubPageWidth, (line.top + line.bottom) / 2
 	}
-	linkAt := func(page int, line epubLine, n int) (Link, bool) {
+	linkAt := func(page int, line textLine, n int) (Link, bool) {
 		x, y := at(line, n)
 		return b.LinkAt(page, x, y)
 	}
-	lines := b.textLines(0)
+	lines := b.lines(0)
 	last := lines[len(lines)-1]
 	if last.text != "Second paragraph." || len(last.links) != 2 {
 		t.Fatalf("last line: %q %#v", last.text, last.links)
@@ -596,7 +596,7 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 	if _, ok := b.LinkAt(0, 0.5, 0.99); ok {
 		t.Fatal("the margin is a link")
 	}
-	notes := b.textLines(1)[0]
+	notes := b.lines(1)[0]
 	if link, ok := linkAt(1, notes, 5); !ok || link.Page != 0 {
 		t.Fatalf("missing anchor must lead to the document start: %#v %v", link, ok)
 	}
@@ -606,11 +606,11 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 	if _, ok := b.LinkAt(3, 0.5, 0.5); ok {
 		t.Fatal("link on a missing page")
 	}
-	for n, want := range map[int]epubLine{
+	for n, want := range map[int]textLine{
 		1: {text: "\u2022 item", links: []epubLink{{2, 6, "https://example.com/li", false}}},
 		2: {text: "\u2022 Block", links: []epubLink{{2, 7, "https://example.com/block", false}}},
 	} {
-		if item := b.textLines(1)[n]; item.text != want.text || !reflect.DeepEqual(item.links, want.links) {
+		if item := b.lines(1)[n]; item.text != want.text || !reflect.DeepEqual(item.links, want.links) {
 			t.Fatalf("list item link: %q %#v", item.text, item.links)
 		}
 	}
@@ -641,7 +641,7 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 		t.Fatalf("page selection: %q %v", text, rects)
 	}
 	for i, r := range rects {
-		if top, bottom := epubLineBox(lines[i]); r.Min.Y != top || r.Max.Y != bottom || r.Min.X < epubMargin || r.Max.X <= r.Min.X {
+		if r.Y0 != lines[i].top || r.Y1 != lines[i].bottom || r.X0 < float64(epubMargin)/epubPageWidth-1e-9 || r.X1 <= r.X0 || r.X1 > 1 {
 			t.Fatalf("rect %d: %v", i, r)
 		}
 	}

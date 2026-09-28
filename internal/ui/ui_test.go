@@ -7,7 +7,9 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -969,5 +971,74 @@ func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
 	m.panes[0].rot = 1
 	if _, ok := m.hitAt(lx, ly); ok {
 		t.Fatal("rotated pages have no cell mapping")
+	}
+}
+
+func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
+	for _, tool := range []string{"pdfinfo", "pdftoppm", "pdftotext", "pdftohtml"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	content := "BT /F1 24 Tf 10 40 Td (Hello reader) Tj ET"
+	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
+		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
+		"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n" +
+		"5 0 obj<</Length " + strconv.Itoa(len(content)) + ">>stream\n" + content + "\nendstream\nendobj\ntrailer<</Root 1 0 R>>\n"
+	path := filepath.Join(t.TempDir(), "words.pdf")
+	if err := os.WriteFile(path, []byte(pdf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, false, []string{path})
+	if m.panes[0].book == nil {
+		t.Fatalf("open PDF: %v", m.panes[0].err)
+	}
+	defer m.panes[0].book.Close()
+	m.width, m.height = 80, 30
+	b := m.panes[0].book
+	apply := func(msg tea.Msg) tea.Cmd {
+		updated, cmd := m.Update(msg)
+		m = updated.(Model)
+		return cmd
+	}
+	apply(m.renderPane(0)())
+	settle := apply(frameReadyMsg{target: m.panes[0], book: b, pane: 0, gen: m.panes[0].gen})
+	if settle == nil {
+		t.Fatal("a shown PDF page schedules its text layer")
+	}
+	prepare, ok := settle().(prepareTextMsg)
+	if !ok || prepare.book != b || prepare.page != 0 {
+		t.Fatalf("prepare message: %#v", prepare)
+	}
+	if extract := apply(prepare); extract == nil {
+		t.Fatal("no extraction for the shown page")
+	} else {
+		extract()
+	}
+	// The text sits in the upper half of the page; its cell is in the image box.
+	box := m.slotBox(0, 0)
+	res := m.panes[0].res
+	x0, y0 := box.Min.X+(box.Dx()-res.Cols)/2, box.Min.Y+(box.Dy()-res.Rows)/2
+	from, to := -1, -1
+	for y := y0; y < y0+res.Rows; y++ {
+		for x := x0; x < x0+res.Cols; x++ {
+			if h, ok := m.hitAt(x, y); ok {
+				if text, _ := b.Select(h.page, h.x, h.y, 1, 1); strings.HasPrefix(text, "Hello") && from < 0 {
+					from, to = x, y
+				}
+			}
+		}
+	}
+	if from < 0 {
+		t.Fatal("no cell selects the PDF text")
+	}
+	apply(tea.MouseMsg{X: from, Y: to, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	apply(tea.MouseMsg{X: x0 + res.Cols - 1, Y: y0 + res.Rows - 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	apply(tea.MouseMsg{X: x0 + res.Cols - 1, Y: y0 + res.Rows - 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	if got := clipboardText(t, m.View()); got != "Hello reader" {
+		t.Fatalf("copied %q", got)
+	}
+	if msg := m.renderPane(0)().(renderedMsg); msg.err != nil || msg.res.Rows == 0 {
+		t.Fatalf("highlighted PDF render: %v", msg.err)
 	}
 }

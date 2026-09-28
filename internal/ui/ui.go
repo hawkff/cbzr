@@ -412,6 +412,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.selDirty = false
 			return m, m.renderPane(msg.pane)
 		}
+		return m, m.prepareText(msg.pane)
+
+	case prepareTextMsg:
+		for _, p := range m.panes {
+			if p.book == msg.book && p.shown[0] == msg.page && !m.webtoon {
+				return m, func() tea.Msg { msg.book.PrepareText(msg.page); return nil }
+			}
+		}
 		return m, nil
 
 	case clipDoneMsg:
@@ -1507,8 +1515,8 @@ func (m *Model) renderPane(i int) tea.Cmd {
 						img = render.Invert(img)
 					}
 					if hasSel && sel.page == pg {
-						if _, rects := b.Select(pg, sel.x0, sel.y0, sel.x1, sel.y1); len(rects) > 0 {
-							img = render.Highlight(img, rects)
+						if _, boxes := b.Select(pg, sel.x0, sel.y0, sel.x1, sel.y1); len(boxes) > 0 {
+							img = render.Highlight(img, pixelRects(boxes, img.Bounds()))
 						}
 					}
 					img = render.Transform(img, rot, zoom, cx, cy)
@@ -1811,7 +1819,7 @@ Book text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Gh
   0              reset zoom
   arrows         pan while zoomed · scroll plain-text pages
   /              search: book text, OCR (tesseract) for images · n / p next / prev hit
-  mouse          drag selects and copies book text (Kitty/Ghostty) · click follows a link,
+  mouse          drag selects and copies text on book and PDF pages · click follows a link,
                  hovering shows where it goes, right click copies it without tracking parameters
   o / O          open file in pane / in split
   x              close pane

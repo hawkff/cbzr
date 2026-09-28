@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -27,6 +28,34 @@ type hit struct {
 }
 
 type clipDoneMsg struct{ gen int }
+
+// prepareTextMsg asks for the text layer of a page that stayed on screen.
+type prepareTextMsg struct {
+	book *book.Book
+	page int
+}
+
+// prepareText extracts a PDF page's text layer once the page has been shown
+// for a moment, so hovering and clicking do not wait for poppler and quick
+// page flips do not start extractions.
+func (m Model) prepareText(i int) tea.Cmd {
+	p := m.panes[i]
+	if p.book == nil || p.book.IsTextPage(p.shown[0]) || !p.book.Selectable(p.shown[0]) {
+		return nil
+	}
+	b, page := p.book, p.shown[0]
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return prepareTextMsg{b, page} })
+}
+
+// pixelRects converts page boxes to pixels of an image of the page.
+func pixelRects(boxes []book.Box, bounds image.Rectangle) []image.Rectangle {
+	w, h := float64(bounds.Dx()), float64(bounds.Dy())
+	rects := make([]image.Rectangle, len(boxes))
+	for i, b := range boxes {
+		rects[i] = image.Rect(int(b.X0*w), int(b.Y0*h), int(math.Ceil(b.X1*w)), int(math.Ceil(b.Y1*h))).Add(bounds.Min)
+	}
+	return rects
+}
 
 func (m Model) slotCount() int {
 	if m.spreadActive() {
@@ -57,16 +86,16 @@ func (m Model) slotBox(i, slot int) image.Rectangle {
 	return image.Rect(x0, y0, x0+w, y0+h)
 }
 
-// pageFraction maps a cell to fractions of the text page shown in a slot.
-// With snap, cells outside the image move to its edge so a drag can run past
-// it. Rotated, webtoon and plain-text pages have no mapping.
+// pageFraction maps a cell to fractions of the page shown in a slot when it
+// has a text layer. With snap, cells outside the image move to its edge so a
+// drag can run past it. Rotated, webtoon and plain-text pages have no mapping.
 func (m Model) pageFraction(i, slot, x, y int, snap bool) (float64, float64, bool) {
 	p := m.panes[i]
 	res, page := p.res, p.shown[slot]
 	if slot == 1 {
 		res = p.res2
 	}
-	if p.book == nil || m.webtoon || p.rot != 0 || !p.book.IsTextPage(page) || res.Rows == 0 || m.renderer.Name() != "kitty" {
+	if p.book == nil || m.webtoon || p.rot != 0 || res.Rows == 0 || !p.book.Selectable(page) || p.book.IsTextPage(page) && m.renderer.Name() != "kitty" {
 		return 0, 0, false
 	}
 	box := m.slotBox(i, slot)
