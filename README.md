@@ -8,7 +8,8 @@ terminal.
 - Go 1.26.4+ to build cbzr.
 - cgo and Xcode command-line tools for native macOS builds.
 - [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR search.
-- [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`) for PDF,
+- [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`; `pdftotext`
+  and `pdftohtml` for selecting text and links) for PDF,
   [DjVuLibre](https://djvu.sourceforge.net/) (`djvused`, `ddjvu`) for DJVU and
   `antiword` for DOC. Comics, EPUB, FB2 and DOCX need no external tools.
 
@@ -93,17 +94,20 @@ the native reader cancels the search.
 
 ## Mouse
 
-On book pages in Kitty and Ghostty, drag to select text. cbzr highlights the
-selection and copies it to the clipboard through OSC 52 when you release the
-button; inside tmux, `set-clipboard` must stay `on` or `external`. Click a
-link to follow it: web and mail links open in the browser, references inside
-the book turn to their page. Hovering over a link shows its destination in
-the status bar and right-click copies it. Opened and copied links lose
-tracking parameters such as `utm_*`, `fbclid`, `gclid` and `si`.
+On book and PDF pages, drag to select text. cbzr highlights the selection
+and copies it to the clipboard through OSC 52 when you release the button;
+inside tmux, `set-clipboard` must stay `on` or `external`. Click a link to
+follow it: web and mail links open in the browser, references inside the
+book turn to their page. Hovering over a link shows its destination in the
+status bar and right-click copies it. Opened and copied links lose tracking
+parameters such as `utm_*`, `fbclid`, `gclid` and `si`.
 
-Selection needs an unrotated page outside webtoon mode. Terminals without
-pixel graphics show book text as plain text; hold shift there to use the
-terminal's own selection.
+Book pages carry their text from the layout. PDF pages get theirs from
+`pdftotext` and `pdftohtml` shortly after they appear, so scanned PDFs
+without a text layer have nothing to select. Selection needs an unrotated
+page outside webtoon mode. Terminals without pixel graphics show book text as
+plain text; hold shift there to use the terminal's own selection. DJVU pages
+have no text layer yet.
 
 ## Web reader
 

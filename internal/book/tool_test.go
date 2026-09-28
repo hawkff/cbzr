@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -202,5 +203,94 @@ func TestOpenDOC(t *testing.T) {
 	}
 	if got := b.PageText(0); !reflect.DeepEqual(got, []string{"Hello paragraph one.", "Second paragraph here."}) {
 		t.Fatalf("paragraphs: %#v", got)
+	}
+}
+
+// linkedPDF writes two pages of Helvetica text with a URI link over "visit
+// example" and a page link over "next page". crop trims the first page's
+// crop box so the media and crop boxes differ.
+func linkedPDF(t *testing.T, name string, crop bool) string {
+	t.Helper()
+	first := "BT /F1 12 Tf 10 80 Td (Hello reader) Tj 0 -20 Td (visit example) Tj 0 -20 Td (next page) Tj ET"
+	second := "BT /F1 12 Tf 10 80 Td (Second) Tj ET"
+	box := ""
+	if crop {
+		box = "/CropBox[5 10 200 95]"
+	}
+	pdf := "%PDF-1.4\n" +
+		"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+		"2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj\n" +
+		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]" + box + "/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R/Annots[7 0 R 8 0 R]>>endobj\n" +
+		"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n" +
+		"5 0 obj<</Length " + strconv.Itoa(len(first)) + ">>stream\n" + first + "\nendstream\nendobj\n" +
+		"6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 9 0 R>>endobj\n" +
+		"7 0 obj<</Type/Annot/Subtype/Link/Rect[10 56 90 72]/Border[0 0 0]/A<</S/URI/URI(https://example.com/a?utm_source=pdf)>>>>endobj\n" +
+		"8 0 obj<</Type/Annot/Subtype/Link/Rect[10 36 70 52]/Border[0 0 0]/Dest[6 0 R /Fit]>>endobj\n" +
+		"9 0 obj<</Length " + strconv.Itoa(len(second)) + ">>stream\n" + second + "\nendstream\nendobj\n" +
+		"trailer<</Root 1 0 R>>\n"
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(pdf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestPDFTextLayerSelectionAndLinks(t *testing.T) {
+	requireTools(t, "pdfinfo", "pdftotext", "pdftohtml")
+	for _, crop := range []bool{false, true} {
+		t.Run(map[bool]string{false: "media box", true: "crop box"}[crop], func(t *testing.T) {
+			b, err := Open(linkedPDF(t, "linked.pdf", crop))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			if !b.Selectable(0) || b.Selectable(2) || b.IsTextPage(0) {
+				t.Fatal("PDF pages must be selectable without being text pages")
+			}
+			lines := b.lines(0)
+			if len(lines) != 3 || lines[1].text != "visit example" || !lines[1].end || len(lines[1].boxes) != 2 {
+				t.Fatalf("lines: %#v", lines)
+			}
+			mid := func(line textLine, word int) (float64, float64) {
+				box := line.boxes[word]
+				return (box.x0 + box.x1) / 2, (line.top + line.bottom) / 2
+			}
+			linkAt := func(line textLine, word int) (Link, bool) {
+				x, y := mid(line, word)
+				return b.LinkAt(0, x, y)
+			}
+			if link, ok := linkAt(lines[1], 0); !ok || link.URL != "https://example.com/a?utm_source=pdf" || link.Page != -1 {
+				t.Fatalf("URI link: %#v %v", link, lines[1].links)
+			}
+			if link, ok := linkAt(lines[2], 1); !ok || link.URL != "" || link.Page != 1 {
+				t.Fatalf("page link: %#v %v", link, lines[2].links)
+			}
+			if _, ok := linkAt(lines[0], 0); ok {
+				t.Fatal("plain words are not links")
+			}
+			text, boxes := b.Select(0, 0, 0, 1, 1)
+			if text != "Hello reader\nvisit example\nnext page" || len(boxes) != 3 || boxes[0].X0 <= 0 || boxes[0].Y1 <= boxes[0].Y0 || boxes[2].Y1 > 1 {
+				t.Fatalf("page selection: %q %v", text, boxes)
+			}
+			x, y := mid(lines[0], 1)
+			if text, _ := b.Select(0, x-0.05, y, 1, 1); text != "reader\nvisit example\nnext page" {
+				t.Fatalf("selection from a word: %q", text)
+			}
+			if text, _ := b.Select(1, 0, 0, 1, 1); text != "Second" {
+				t.Fatalf("second page: %q", text)
+			}
+			if b.layers[0] == nil || len(b.layerOrder) != 2 {
+				t.Fatalf("layer cache: %v", b.layerOrder)
+			}
+		})
+	}
+	if _, internal, ok := pdfLinkTarget("Tricky name.html#12"); !internal || !ok {
+		t.Fatal("page reference with spaces")
+	}
+	if _, _, ok := pdfLinkTarget("file:///etc/passwd"); ok {
+		t.Fatal("file link survived")
+	}
+	if text := pdfWordText("skylining@live.com\u200b"); text != "skylining@live.com" {
+		t.Fatalf("invisible characters: %q", text)
 	}
 }

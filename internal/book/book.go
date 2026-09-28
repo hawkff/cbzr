@@ -62,6 +62,9 @@ type Book struct {
 	encoded      map[int]encodedPage
 	encodedOrder []int
 	encodedBytes int
+
+	layers     map[int][]textLine // PDF text layers by page
+	layerOrder []int
 }
 
 type encodedPage struct {
