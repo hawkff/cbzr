@@ -12,6 +12,8 @@ extern int cbzr_go_native_is_webtoon(uintptr_t handle);
 extern void cbzr_go_native_scroll(uintptr_t handle, double pixels);
 extern void cbzr_go_native_turn(uintptr_t handle, int delta);
 extern void cbzr_go_native_event(uintptr_t handle, int event);
+extern void cbzr_go_native_click(uintptr_t handle, double x, double y, void *view, uint64_t generation);
+extern void cbzr_go_native_go_to(uintptr_t handle, int page);
 
 static const int CBZREventClear = 1;
 static const int CBZREventSave = 2;
@@ -43,6 +45,10 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
 @property(nonatomic) BOOL hasInputCount;
 @property(nonatomic) BOOL pageGestureConsumed;
 @property(nonatomic) BOOL closing;
+@property(nonatomic) BOOL hasFrame;
+@property(nonatomic) BOOL mousePressed;
+@property(nonatomic) NSPoint mousePoint;
+@property(nonatomic) uint64_t linkGeneration;
 @property(nonatomic, strong) NSTimer *animationTimer;
 @property(nonatomic, strong) NSTimer *pageResetTimer;
 - (instancetype)initWithFrame:(NSRect)frame handle:(uintptr_t)handle;
@@ -51,6 +57,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
 - (void)cancelScroll;
 - (void)discardBlockedScroll:(double)pixels;
 - (int)consumeInputCount;
+- (void)cancelLink;
 - (void)shutdownWithAction:(int)action;
 @end
 
@@ -73,6 +80,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
 
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
+    self.hasFrame = NO;
     if (self.closing) {
         return;
     }
@@ -119,6 +127,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
         CGContextDrawImage(context, NSMakeRect(0, 0, NSWidth(bounds), NSHeight(bounds)), image);
         CGContextRestoreGState(context);
         CGImageRelease(image);
+        self.hasFrame = YES;
     }
 }
 
@@ -128,10 +137,49 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     }
 }
 
+- (void)cancelLink {
+    self.linkGeneration++;
+    self.mousePressed = NO;
+}
+
+- (void)setFrameSize:(NSSize)size {
+    [self cancelLink];
+    self.hasFrame = NO;
+    [super setFrameSize:size];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    if (self.closing) return;
+    [self cancelLink];
+    self.mousePressed = self.hasFrame;
+    self.mousePoint = [self convertPoint:event.locationInWindow fromView:nil];
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    [self cancelLink];
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    if (self.closing || !self.mousePressed || !self.hasFrame) return;
+    self.mousePressed = NO;
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSRect bounds = self.bounds;
+    if (!NSPointInRect(point, bounds) || NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0 ||
+        hypot(point.x - self.mousePoint.x, point.y - self.mousePoint.y) > 4) return;
+    [self cancelScroll];
+    // The completion releases this retain even if the window closes meanwhile.
+    void *context = (__bridge_retained void *)self;
+    cbzr_go_native_click(self.handle,
+                         (point.x - NSMinX(bounds)) / NSWidth(bounds),
+                         (point.y - NSMinY(bounds)) / NSHeight(bounds),
+                         context, self.linkGeneration);
+}
+
 - (void)keyDown:(NSEvent *)event {
     if (self.closing) {
         return;
     }
+    [self cancelLink];
     NSString *key = event.charactersIgnoringModifiers;
     if (key.length == 0) {
         return;
@@ -223,6 +271,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     if (self.closing) {
         return;
     }
+    [self cancelLink];
     if (cbzr_go_native_is_webtoon(self.handle)) {
         double delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 12.0;
         [self queueScroll:-delta];
@@ -317,6 +366,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
         return;
     }
     self.closing = YES;
+    [self cancelLink];
     cbzr_go_native_event(self.handle, action);
     [self cancelScroll];
     [self.pageResetTimer invalidate];
@@ -334,6 +384,27 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     return NO;
 }
 @end
+
+void cbzr_native_link_done(void *context, uint64_t generation, int page, const char *url) {
+    @autoreleasepool {
+        CBZRView *view = (__bridge_transfer CBZRView *)context;
+        NSString *destination = url ? [NSString stringWithUTF8String:url] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (view.closing || generation != view.linkGeneration) return;
+            [view cancelLink];
+            if (page >= 0) {
+                [view cancelScroll];
+                cbzr_go_native_go_to(view.handle, page);
+                [view renderNow];
+            } else if (destination) {
+                NSURL *target = [NSURL URLWithString:destination];
+                if (target && [@[@"http", @"https", @"mailto"] containsObject:target.scheme.lowercaseString]) {
+                    [NSWorkspace.sharedWorkspace openURL:target];
+                }
+            }
+        });
+    }
+}
 
 int cbzr_native_run(uintptr_t handle, const char *title) {
     @autoreleasepool {

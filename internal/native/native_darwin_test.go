@@ -7,9 +7,13 @@ import (
 	"bytes"
 	"image"
 	"image/png"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"cbzr/internal/book"
 )
@@ -134,5 +138,132 @@ func TestNativeInversionKeepsOriginalPages(t *testing.T) {
 				t.Fatal("inversion changed a cached page")
 			}
 		})
+	}
+}
+
+func TestNativePagePointUsesShownCropAndRotation(t *testing.T) {
+	for _, scale := range []int{1, 2} {
+		for rotation, want := range [][2]float64{{.375, .375}, {.375, .625}, {.625, .625}, {.625, .375}} {
+			r := &reader{state: State{Page: 9}, frameSize: image.Pt(200*scale, 100*scale), shown: []shownPage{{
+				page: 3, rotation: rotation, bounds: image.Rect(20*scale, 10*scale, 180*scale, 90*scale),
+				crop: image.Rect(100, 50, 300, 150), size: image.Pt(400, 200),
+			}}}
+			page, x, y, ok := r.pagePoint(.3, .3)
+			if !ok || page != 3 || math.Abs(x-want[0]) > 1e-9 || math.Abs(y-want[1]) > 1e-9 {
+				t.Fatalf("scale=%d rotation=%d: point=%d,%v,%v,%v", scale, rotation, page, x, y, ok)
+			}
+			for _, point := range [][2]float64{{0, 0}, {1, 1}, {-.1, .5}, {math.NaN(), .5}} {
+				if _, _, _, ok := r.pagePoint(point[0], point[1]); ok {
+					t.Fatal("margin or invalid point mapped to a page")
+				}
+			}
+		}
+	}
+}
+
+func nativeLinkedPDF(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"pdfinfo", "pdftoppm", "pdftotext", "pdftohtml"} {
+		if _, err := exec.LookPath(name); err != nil {
+			t.Skipf("%s is not installed", name)
+		}
+	}
+	text := "BT /F1 12 Tf 10 80 Td (next page) Tj 0 -20 Td (web link) Tj ET"
+	pdf := "%PDF-1.4\n" +
+		"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+		"2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj\n" +
+		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R/Annots[7 0 R 8 0 R]>>endobj\n" +
+		"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n" +
+		"5 0 obj<</Length " + strconv.Itoa(len(text)) + ">>stream\n" + text + "\nendstream\nendobj\n" +
+		"6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]>>endobj\n" +
+		"7 0 obj<</Type/Annot/Subtype/Link/Rect[10 76 80 92]/Border[0 0 0]/Dest[6 0 R /Fit]>>endobj\n" +
+		"8 0 obj<</Type/Annot/Subtype/Link/Rect[10 56 80 72]/Border[0 0 0]/A<</S/URI/URI(https://example.com/read?utm_source=pdf&id=7)>>>>endobj\n" +
+		"trailer<</Root 1 0 R>>\n"
+	path := filepath.Join(t.TempDir(), "links.pdf")
+	if err := os.WriteFile(path, []byte(pdf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestNativePDFLinks(t *testing.T) {
+	b, err := book.Open(nativeLinkedPDF(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		state         State
+		x, y          float64
+	}{
+		{"letterbox", 400, 400, State{Zoom: 1}, .1, .325},
+		{"zoom", 400, 200, State{Zoom: 2, CenterX: .25, CenterY: .25}, .2, .3},
+		{"rotation", 400, 400, State{Zoom: 1, Rotation: 1}, .675, .1},
+		{"spread", 808, 200, State{Zoom: 1, Spread: true}, 41.0 / 808, .15},
+		{"webtoon", 200, 80, State{Zoom: 1, Webtoon: true, Offset: .1}, .1, .0625},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &reader{book: b, state: tc.state, scaledPages: make(map[scaledPageKey]image.Image)}
+			if r.frame(tc.width, tc.height) == nil {
+				t.Fatal(r.err)
+			}
+			if tc.name == "letterbox" && b.TextReady(0) {
+				t.Fatal("painting a PDF started text extraction")
+			}
+			if r.state.Spread {
+				if page, _, _, ok := r.pagePoint(.8, .15); !ok || page != 1 {
+					t.Fatal("right spread slot maps to the wrong page")
+				}
+				if _, _, _, ok := r.pagePoint(.5, .5); ok {
+					t.Fatal("spread gap maps to a page")
+				}
+			}
+			r.state.Page = 1 // a turn awaiting paint must not change the clicked page
+			done := make(chan book.Link, 1)
+			r.click(tc.x, tc.y, func(link book.Link, ok bool) {
+				if !ok {
+					link.Page = -1
+				}
+				done <- link
+			})
+			select {
+			case link := <-done:
+				if link.URL != "" || link.Page != 1 {
+					t.Fatalf("internal link: %#v", link)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("PDF click did not complete")
+			}
+		})
+	}
+	r := &reader{book: b, state: State{Zoom: 1}}
+	if r.frame(400, 200) == nil {
+		t.Fatal(r.err)
+	}
+	done := make(chan book.Link, 1)
+	r.click(.1, .35, func(link book.Link, _ bool) { done <- link })
+	select {
+	case link := <-done:
+		if link.URL != "https://example.com/read?id=7" || link.Page != -1 {
+			t.Fatalf("external link: %#v", link)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("external link did not complete")
+	}
+	r.state = State{Spread: true, Zoom: 2, Offset: .5, Scroll: 3}
+	r.pendingScroll = 50
+	r.goTo(1)
+	if r.state.Page != 1 || r.state.Zoom != 1 || r.state.CenterX != .5 || r.state.CenterY != .5 || r.state.Offset != 0 || r.state.Scroll != 0 || r.pendingScroll != 0 {
+		t.Fatalf("link destination kept a stale view: %#v", r.state)
+	}
+	r.state = State{Webtoon: true, Offset: .1}
+	r.scaledPages = make(map[scaledPageKey]image.Image)
+	if r.frame(200, 150) == nil {
+		t.Fatal(r.err)
+	}
+	if page, x, y, ok := r.pagePoint(.1, .7); !ok || page != 1 || math.Abs(x-.1) > 1e-9 || math.Abs(y-.15) > 1e-9 {
+		t.Fatalf("second webtoon page: %d,%v,%v,%v", page, x, y, ok)
 	}
 }

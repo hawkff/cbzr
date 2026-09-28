@@ -872,8 +872,8 @@ func TestCleanURLStripsTrackingParameters(t *testing.T) {
 		"mailto:someone@example.com":                            "mailto:someone@example.com",
 		"://bad":                                                "://bad",
 	} {
-		if got := cleanURL(raw); got != want {
-			t.Errorf("cleanURL(%q) = %q, want %q", raw, got, want)
+		if got := book.CleanURL(raw); got != want {
+			t.Errorf("CleanURL(%q) = %q, want %q", raw, got, want)
 		}
 	}
 }

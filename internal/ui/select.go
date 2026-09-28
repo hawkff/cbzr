@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"image"
 	"math"
-	"net/url"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -170,7 +168,7 @@ func linkLabel(link book.Link) string {
 	if link.URL == "" {
 		return fmt.Sprintf("p.%d", link.Page+1)
 	}
-	return cleanURL(link.URL)
+	return book.CleanURL(link.URL)
 }
 
 // press anchors a selection on the page under the cursor and clears the
@@ -286,7 +284,7 @@ func (m Model) finishTextAction(msg textActionMsg) (tea.Model, tea.Cmd) {
 	if link.URL == "" {
 		return m, nil
 	}
-	u := cleanURL(link.URL)
+	u := book.CleanURL(link.URL)
 	return m.copyText(u, "copied "+u)
 }
 
@@ -294,7 +292,7 @@ func (m Model) follow(i int, link book.Link) (tea.Model, tea.Cmd) {
 	if link.URL == "" {
 		return m.goTo(i, link.Page)
 	}
-	u := cleanURL(link.URL)
+	u := book.CleanURL(link.URL)
 	m.status = "→ " + u
 	if m.openBrowser != nil {
 		if err := m.openBrowser(u); err != nil {
@@ -322,44 +320,4 @@ func (m Model) copyText(text, status string) (tea.Model, tea.Cmd) {
 	m.status = status
 	gen := m.clipGen
 	return m, tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return clipDoneMsg{gen} })
-}
-
-// trackingParams lists query parameters that only identify the reader or the
-// campaign that brought them; cleanURL drops them along with utm_-style
-// prefixes.
-var trackingParams = map[string]bool{
-	"fbclid": true, "gclid": true, "gclsrc": true, "dclid": true, "gbraid": true, "wbraid": true,
-	"msclkid": true, "twclid": true, "ttclid": true, "igshid": true, "igsh": true, "yclid": true,
-	"ysclid": true, "srsltid": true, "si": true, "mkt_tok": true, "ml_subscriber": true,
-	"ml_subscriber_hash": true, "rb_clickid": true, "s_cid": true, "s_kwcid": true, "wickedid": true,
-	"_openstat": true, "ref_src": true, "ref_url": true, "spm": true, "scm": true, "_branch_match_id": true,
-	"_kx": true, "epik": true, "li_fat_id": true, "cmpid": true, "ncid": true, "_ga": true, "_gl": true,
-}
-
-var trackingPrefixes = []string{"utm_", "mtm_", "pk_", "piwik_", "hsa_", "_hs", "__hs", "mc_", "oly_", "vero_"}
-
-// cleanURL strips tracking parameters from a URL and leaves the rest in
-// place, in order.
-func cleanURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.RawQuery == "" {
-		return raw
-	}
-	var kept []string
-	for _, pair := range strings.Split(u.RawQuery, "&") {
-		key, _, _ := strings.Cut(pair, "=")
-		if decoded, err := url.QueryUnescape(key); err == nil {
-			key = decoded
-		}
-		key = strings.ToLower(key)
-		tracking := trackingParams[key]
-		for _, prefix := range trackingPrefixes {
-			tracking = tracking || strings.HasPrefix(key, prefix)
-		}
-		if !tracking {
-			kept = append(kept, pair)
-		}
-	}
-	u.RawQuery = strings.Join(kept, "&")
-	return u.String()
 }

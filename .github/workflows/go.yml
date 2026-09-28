@@ -31,6 +31,9 @@ jobs:
       - name: Install page renderers for the PDF, DJVU and DOC tests
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils djvulibre-bin antiword
+      - name: Install Poppler for native PDF link tests
+        if: runner.os == 'macOS' && matrix.cgo == '1'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install poppler
       - name: Test
         run: go test ./...
       - name: Vet
