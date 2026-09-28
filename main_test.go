@@ -119,3 +119,27 @@ func TestCheckCLIHeadless(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalOutputFrames(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	out := terminalOutput{f}
+	if out.Fd() != f.Fd() {
+		t.Fatal("output wrapper lost the terminal descriptor")
+	}
+	frame := []byte("\x1b_Ga=d,d=I,i=1\x1b\\frame")
+	if n, err := out.Write(frame); err != nil || n != len(frame) {
+		t.Fatalf("frame write: %d, %v", n, err)
+	}
+	got, err := os.ReadFile(f.Name())
+	if err != nil || string(got) != "\x1b[?2026h"+string(frame)+"\x1b[?2026l" {
+		t.Fatalf("unframed output: %q, %v", got, err)
+	}
+	f.Close()
+	if n, err := out.Write(frame); err == nil || n != 0 {
+		t.Fatalf("failed output write: %d, %v", n, err)
+	}
+}

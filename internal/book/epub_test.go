@@ -580,6 +580,12 @@ func TestEPUBSelectionAndLinks(t *testing.T) {
 		return b.LinkAt(page, x, y)
 	}
 	lines := b.lines(0)
+	if again := b.lines(0); len(again) != len(lines) || &again[0] != &lines[0] {
+		t.Fatal("hit testing rebuilt the text layer")
+	}
+	if allocs := testing.AllocsPerRun(100, func() { b.LinkAt(0, 0.5, 0.99) }); allocs != 0 {
+		t.Fatalf("cached hover allocated %g times", allocs)
+	}
 	last := lines[len(lines)-1]
 	if last.text != "Second paragraph." || len(last.links) != 2 {
 		t.Fatalf("last line: %q %#v", last.text, last.links)

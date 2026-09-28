@@ -121,6 +121,7 @@ type Model struct {
 	hover          string // destination of the link under the mouse
 	clip           []byte // pending OSC 52 clipboard write
 	clipGen        int
+	actionGen      int // discard deferred text actions after newer input
 }
 
 type renderedMsg struct {
@@ -405,22 +406,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.slot == 1 {
-			return m, nil
+			return m, m.prepareText(msg.pane, msg.slot)
 		}
 		p.loading = false
 		if msg.rerender || m.webtoon && p.webScroll != 0 || p.selDirty {
 			p.selDirty = false
 			return m, m.renderPane(msg.pane)
 		}
-		return m, m.prepareText(msg.pane)
+		return m, m.prepareText(msg.pane, msg.slot)
 
 	case prepareTextMsg:
-		for _, p := range m.panes {
-			if p.book == msg.book && p.shown[0] == msg.page && !m.webtoon {
+		for _, p := range m.panes[:m.paneCount()] {
+			if p == msg.target && p.book == msg.book && p.gen == msg.gen && msg.slot < m.slotCount() && p.page+msg.slot == msg.page && p.shown[msg.slot] == msg.page && !m.webtoon && p.rot == 0 {
 				return m, func() tea.Msg { msg.book.PrepareText(msg.page); return nil }
 			}
 		}
 		return m, nil
+
+	case hoverMsg:
+		m.hover = string(msg)
+		return m, nil
+
+	case textActionMsg:
+		return m.finishTextAction(msg)
 
 	case clipDoneMsg:
 		if msg.gen == m.clipGen {
@@ -443,6 +451,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMouse(msg)
 
 	case tea.KeyMsg:
+		m.actionGen++
 		// Terminals can batch fast typing (or paste) into one rune message;
 		// replay it as individual keys so counts like "2j" still work.
 		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
@@ -488,6 +497,10 @@ func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.mode != modeRead {
 		return m, nil
 	}
+	if msg.Action == tea.MouseActionPress {
+		m.actionGen++
+		m.status = ""
+	}
 	target := 0
 	if m.split && msg.X > (m.width-1)/2 {
 		target = 1
@@ -518,10 +531,7 @@ func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m.dragTo(msg.X, msg.Y)
 		}
 		if msg.Button == tea.MouseButtonNone {
-			m.hover = ""
-			if _, link, ok := m.linkAt(msg.X, msg.Y); ok {
-				m.hover = linkLabel(link)
-			}
+			m.hover = m.hoverAt(msg.X, msg.Y)
 		}
 	case tea.MouseActionRelease:
 		if m.drag != nil && msg.Button != tea.MouseButtonRight {
@@ -1612,30 +1622,36 @@ func (m Model) View() string {
 	// Compose the frame manually: width libraries miscount kitty
 	// placeholder runes, so panes are padded by known cell counts and
 	// zipped row by row.
-	var body string
+	lines := m.paneLines(0)
 	if m.split {
-		left, right := m.paneLines(0), m.paneLines(1)
+		right := m.paneLines(1)
 		sep := dim.Render("│")
-		rows := make([]string, len(left))
-		for r := range left {
-			rows[r] = left[r] + sep + right[r]
+		for r := range lines {
+			lines[r] += sep + right[r]
 		}
-		body = strings.Join(rows, "\n")
-	} else {
-		body = strings.Join(m.paneLines(0), "\n")
 	}
-	// Graphics transmissions ride on line 0 as zero-width escapes: one
-	// writer, one frame, no torn APC sequences.
+	// Keep image uploads on a body row, separate from changing titles and
+	// clipboard writes. Retain them for repaints after menus and coalesced frames.
 	var oob strings.Builder
-	oob.Write(m.clip)
 	for i := 0; i < m.paneCount(); i++ {
 		oob.Write(m.panes[i].res.Transmit)
 		oob.Write(m.panes[i].res2.Transmit)
 	}
-	if m.zen && m.mode != modeSearch {
-		return oob.String() + body
+	row := 0
+	if !m.zen && len(lines) > 1 {
+		row = 1
 	}
-	return oob.String() + body + "\n" + m.statusView()
+	lines[row] = oob.String() + lines[row]
+	clipRow := 0
+	if m.zen {
+		clipRow = len(lines) - 1
+	}
+	lines[clipRow] = string(m.clip) + lines[clipRow]
+	body := strings.Join(lines, "\n")
+	if m.zen && m.mode != modeSearch {
+		return body
+	}
+	return body + "\n" + m.statusView()
 }
 
 // centerCells centers a block of lines, each exactly cols terminal cells

@@ -247,6 +247,10 @@ func TestPDFTextLayerSelectionAndLinks(t *testing.T) {
 			if !b.Selectable(0) || b.Selectable(2) || b.IsTextPage(0) {
 				t.Fatal("PDF pages must be selectable without being text pages")
 			}
+			if b.lines(0) != nil || b.TextReady(0) {
+				t.Fatal("PDF hit testing must not extract a cold layer")
+			}
+			b.PrepareText(0)
 			lines := b.lines(0)
 			if len(lines) != 3 || lines[1].text != "visit example" || !lines[1].end || len(lines[1].boxes) != 2 {
 				t.Fatalf("lines: %#v", lines)
@@ -276,6 +280,7 @@ func TestPDFTextLayerSelectionAndLinks(t *testing.T) {
 			if text, _ := b.Select(0, x-0.05, y, 1, 1); text != "reader\nvisit example\nnext page" {
 				t.Fatalf("selection from a word: %q", text)
 			}
+			b.PrepareText(1)
 			if text, _ := b.Select(1, 0, 0, 1, 1); text != "Second" {
 				t.Fatalf("second page: %q", text)
 			}

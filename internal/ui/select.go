@@ -28,23 +28,48 @@ type hit struct {
 }
 
 type clipDoneMsg struct{ gen int }
+type hoverMsg string
+
+// FilterMouse drops unchanged hover events before Bubble Tea rebuilds the view.
+func FilterMouse(model tea.Model, msg tea.Msg) tea.Msg {
+	m, ok := model.(Model)
+	mouse, motion := msg.(tea.MouseMsg)
+	if !ok || !motion || mouse.Action != tea.MouseActionMotion || mouse.Button != tea.MouseButtonNone {
+		return msg
+	}
+	if m.mode != modeRead {
+		return nil
+	}
+	hover := m.hoverAt(mouse.X, mouse.Y)
+	if hover == m.hover {
+		return nil
+	}
+	return hoverMsg(hover)
+}
+
+func (m Model) hoverAt(x, y int) string {
+	if _, link, ok := m.linkAt(x, y); ok {
+		return linkLabel(link)
+	}
+	return ""
+}
 
 // prepareTextMsg asks for the text layer of a page that stayed on screen.
 type prepareTextMsg struct {
-	book *book.Book
-	page int
+	target          *pane
+	book            *book.Book
+	page, slot, gen int
 }
 
-// prepareText extracts a PDF page's text layer once the page has been shown
-// for a moment, so hovering and clicking do not wait for poppler and quick
-// page flips do not start extractions.
-func (m Model) prepareText(i int) tea.Cmd {
+// prepareText delays PDF extraction until a page stays in either spread slot.
+func (m Model) prepareText(i, slot int) tea.Cmd {
 	p := m.panes[i]
-	if p.book == nil || p.book.IsTextPage(p.shown[0]) || !p.book.Selectable(p.shown[0]) {
+	page := p.shown[slot]
+	if p.book == nil || m.webtoon || p.rot != 0 || p.book.IsTextPage(page) || !p.book.Selectable(page) || p.book.TextReady(page) {
 		return nil
 	}
-	b, page := p.book, p.shown[0]
-	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return prepareTextMsg{b, page} })
+	msg := prepareTextMsg{target: p, book: p.book, page: page, slot: slot, gen: p.gen}
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return msg })
 }
 
 // pixelRects converts page boxes to pixels of an image of the page.
@@ -192,19 +217,77 @@ func (m Model) release(x, y int) (tea.Model, tea.Cmd) {
 	}
 	if x == m.pressX && y == m.pressY {
 		p.sel = nil
-		if link, ok := p.book.LinkAt(h.page, h.x, h.y); ok {
-			return m.follow(h.pane, link)
-		}
-		return m, nil
+		return m.textAction(h, nil, false)
 	}
 	if p.sel == nil {
 		return m, nil
 	}
-	text, _ := p.book.Select(h.page, p.sel.x0, p.sel.y0, p.sel.x1, p.sel.y1)
-	if text == "" {
+	return m.textAction(h, p.sel, false)
+}
+
+// textActionMsg keeps one click or selection while its PDF layer loads.
+type textActionMsg struct {
+	hit      hit
+	target   *pane
+	book     *book.Book
+	gen      int
+	sel      *selection
+	copyLink bool
+	prepared bool
+}
+
+func (m Model) textAction(h hit, sel *selection, copyLink bool) (tea.Model, tea.Cmd) {
+	p := m.panes[h.pane]
+	msg := textActionMsg{hit: h, target: p, book: p.book, gen: m.actionGen, copyLink: copyLink}
+	if sel != nil {
+		snapshot := *sel
+		msg.sel = &snapshot
+	}
+	if !p.book.IsTextPage(h.page) && !p.book.TextReady(h.page) {
+		msg.prepared = true
+		m.status = "loading text…"
+		return m, func() tea.Msg {
+			msg.book.PrepareText(h.page)
+			return msg
+		}
+	}
+	return m.finishTextAction(msg)
+}
+
+func (m Model) finishTextAction(msg textActionMsg) (tea.Model, tea.Cmd) {
+	h := msg.hit
+	p := m.panes[h.pane]
+	if msg.gen != m.actionGen || h.pane >= m.paneCount() || p != msg.target || p.book != msg.book || h.slot >= m.slotCount() || p.shown[h.slot] != h.page {
 		return m, nil
 	}
-	return m.copyText(text, fmt.Sprintf("copied %d characters", utf8.RuneCountInString(text)))
+	m.status = ""
+	if s := msg.sel; s != nil {
+		text, _ := msg.book.Select(h.page, s.x0, s.y0, s.x1, s.y1)
+		if text == "" {
+			return m, nil
+		}
+		updated, cmd := m.copyText(text, fmt.Sprintf("copied %d characters", utf8.RuneCountInString(text)))
+		if msg.prepared {
+			if p.loading {
+				p.selDirty = true
+			} else {
+				cmd = tea.Batch(cmd, m.renderPane(h.pane))
+			}
+		}
+		return updated, cmd
+	}
+	link, ok := msg.book.LinkAt(h.page, h.x, h.y)
+	if !ok {
+		return m, nil
+	}
+	if !msg.copyLink {
+		return m.follow(h.pane, link)
+	}
+	if link.URL == "" {
+		return m, nil
+	}
+	u := cleanURL(link.URL)
+	return m.copyText(u, "copied "+u)
 }
 
 func (m Model) follow(i int, link book.Link) (tea.Model, tea.Cmd) {
@@ -223,12 +306,11 @@ func (m Model) follow(i int, link book.Link) (tea.Model, tea.Cmd) {
 
 // copyLink puts the cleaned URL under the cursor on the clipboard.
 func (m Model) copyLink(x, y int) (tea.Model, tea.Cmd) {
-	_, link, ok := m.linkAt(x, y)
-	if !ok || link.URL == "" {
+	h, ok := m.hitAt(x, y)
+	if !ok {
 		return m, nil
 	}
-	u := cleanURL(link.URL)
-	return m.copyText(u, "copied "+u)
+	return m.textAction(h, nil, true)
 }
 
 // copyText sets the clipboard through OSC 52. The sequence rides on the next

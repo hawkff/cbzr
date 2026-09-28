@@ -932,7 +932,11 @@ func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
 	}
 	m.panes[0].page = 0
 
-	apply(tea.MouseMsg{X: lx, Y: ly, Action: tea.MouseActionMotion})
+	motion := tea.MouseMsg{X: lx, Y: ly, Action: tea.MouseActionMotion}
+	apply(FilterMouse(m, motion))
+	if FilterMouse(m, motion) != nil {
+		t.Fatal("unchanged link hover rebuilt the view")
+	}
 	if !strings.Contains(m.statusView(), "→ https://example.com/read?id=7") {
 		t.Fatalf("hover status: %q", m.statusView())
 	}
@@ -974,21 +978,29 @@ func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
 	}
 }
 
-func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
+func testPDFPath(t *testing.T) string {
+	t.Helper()
 	for _, tool := range []string{"pdfinfo", "pdftoppm", "pdftotext", "pdftohtml"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not installed", tool)
 		}
 	}
 	content := "BT /F1 24 Tf 10 40 Td (Hello reader) Tj ET"
-	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
-		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
+	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj\n" +
+		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R/Annots[7 0 R]>>endobj\n" +
 		"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n" +
-		"5 0 obj<</Length " + strconv.Itoa(len(content)) + ">>stream\n" + content + "\nendstream\nendobj\ntrailer<</Root 1 0 R>>\n"
+		"5 0 obj<</Length " + strconv.Itoa(len(content)) + ">>stream\n" + content + "\nendstream\nendobj\n" +
+		"6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
+		"7 0 obj<</Type/Annot/Subtype/Link/Rect[10 35 160 65]/Border[0 0 0]/A<</S/URI/URI(https://example.com/read)>>>>endobj\ntrailer<</Root 1 0 R>>\n"
 	path := filepath.Join(t.TempDir(), "words.pdf")
 	if err := os.WriteFile(path, []byte(pdf), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
+
+func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
+	path := testPDFPath(t)
 	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, false, []string{path})
 	if m.panes[0].book == nil {
 		t.Fatalf("open PDF: %v", m.panes[0].err)
@@ -1014,6 +1026,42 @@ func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
 		t.Fatal("no extraction for the shown page")
 	} else {
 		extract()
+	}
+	if m.prepareText(0, 0) != nil {
+		t.Fatal("cached layer scheduled another preparation")
+	}
+	m.spread = true
+	p := m.panes[0]
+	p.shown[1] = 1
+	right := apply(frameReadyMsg{target: p, book: b, pane: 0, slot: 1, gen: p.gen})
+	if right == nil {
+		t.Fatal("right spread page did not schedule its text layer")
+	}
+	rightMsg := right().(prepareTextMsg)
+	if rightMsg.page != 1 || rightMsg.slot != 1 {
+		t.Fatal("right slot prepared the wrong page")
+	}
+	p.gen++
+	if apply(rightMsg) != nil {
+		t.Fatal("stale frame started an extraction")
+	}
+	p.gen--
+	p.page = 1
+	if apply(rightMsg) != nil {
+		t.Fatal("a pending page turn started an old extraction")
+	}
+	p.page = 0
+	if extract := apply(rightMsg); extract == nil {
+		t.Fatal("right slot lost its extraction")
+	} else {
+		extract()
+	}
+	if !b.TextReady(1) {
+		t.Fatal("right slot has no prepared text")
+	}
+	m.spread = false
+	if apply(rightMsg) != nil {
+		t.Fatal("hidden spread slot started an extraction")
 	}
 	// The text sits in the upper half of the page; its cell is in the image box.
 	box := m.slotBox(0, 0)
