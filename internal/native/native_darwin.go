@@ -15,6 +15,7 @@ void cbzr_native_frame_done(void *view, uint64_t generation, uintptr_t frame, vo
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/draw"
@@ -65,19 +66,22 @@ type shownPage struct {
 type reader struct {
 	mu sync.Mutex
 
-	book          *book.Book
-	state         State
-	action        Action
-	pendingScroll float64
-	blockedScroll float64
-	scaledPages   map[scaledPageKey]image.Image
-	scaledOrder   []scaledPageKey
-	shown         []shownPage
-	frameSize     image.Point
-	err           error
-	closed        bool
-	prefetching   bool
-	prefetchNext  [2]int // first page and count for the latest accepted frame
+	book           *book.Book
+	state          State
+	action         Action
+	pendingScroll  float64
+	blockedScroll  float64
+	scaledPages    map[scaledPageKey]image.Image
+	scaledOrder    []scaledPageKey
+	shown          []shownPage
+	frameSize      image.Point
+	err            error
+	closed         bool
+	renderContext  context.Context
+	renderCancel   context.CancelFunc
+	prefetching    bool
+	prefetchNext   [2]int // first page and count for the latest accepted frame
+	prefetchCancel context.CancelFunc
 }
 
 type renderedFrame struct {
@@ -85,6 +89,7 @@ type renderedFrame struct {
 	before          State
 	scroll          float64
 	image           *image.RGBA
+	cancel          context.CancelFunc
 }
 
 // renderAsync snapshots the view before doing page I/O and scaling. The window
@@ -96,19 +101,37 @@ func (r *reader) renderAsync(width, height int, done func(*renderedFrame)) {
 		done(nil)
 		return
 	}
+	if r.renderCancel != nil {
+		r.renderCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.renderCancel = cancel
 	snapshot := &reader{
-		book: r.book, state: r.state, pendingScroll: r.pendingScroll,
+		book: r.book, state: r.state, pendingScroll: r.pendingScroll, renderContext: ctx,
 		scaledPages: maps.Clone(r.scaledPages), scaledOrder: slices.Clone(r.scaledOrder),
 	}
 	if snapshot.scaledPages == nil {
 		snapshot.scaledPages = make(map[scaledPageKey]image.Image)
 	}
-	f := &renderedFrame{owner: r, snapshot: snapshot, before: r.state, scroll: r.pendingScroll}
+	f := &renderedFrame{owner: r, snapshot: snapshot, before: r.state, scroll: r.pendingScroll, cancel: cancel}
 	r.mu.Unlock()
 	go func() {
-		f.image = snapshot.frame(width, height)
+		if ctx.Err() == nil {
+			f.image = snapshot.frame(width, height)
+		}
+		if err := ctx.Err(); err != nil {
+			f.image, snapshot.err = nil, err
+		}
 		done(f)
 	}()
+}
+
+func (r *reader) cancelRender() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.renderCancel != nil {
+		r.renderCancel()
+	}
 }
 
 // accept commits navigation separately from the hit map: the old image stays
@@ -117,7 +140,7 @@ func (f *renderedFrame) accept() bool {
 	r, s := f.owner, f.snapshot
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed || r.state != f.before {
+	if r.closed || r.state != f.before || s.renderContext.Err() != nil {
 		return false
 	}
 	r.state = s.state
@@ -130,6 +153,9 @@ func (f *renderedFrame) accept() bool {
 		}
 		target := [2]int{next, min(count, r.book.Len()-next)}
 		if target != r.prefetchNext {
+			if r.prefetchCancel != nil {
+				r.prefetchCancel()
+			}
 			r.prefetchNext = target
 			if !r.prefetching && target[1] > 0 {
 				r.prefetching = true
@@ -159,13 +185,17 @@ func (r *reader) prefetch() {
 			r.mu.Unlock()
 			return
 		}
+		ctx, cancel := context.WithCancel(context.Background())
+		r.prefetchCancel = cancel
 		r.mu.Unlock()
 		for page := target[0]; page < target[0]+target[1]; page++ {
-			if _, err := r.book.Page(page); err != nil {
+			if _, err := r.book.PageContext(ctx, page); err != nil {
 				break
 			}
 		}
+		cancel()
 		r.mu.Lock()
+		r.prefetchCancel = nil
 		if r.prefetchNext == target {
 			r.prefetching = false
 			r.mu.Unlock()
@@ -292,7 +322,7 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 	}
 	for slot, box := range slots {
 		page := r.state.Page + slot
-		img, err := r.book.Page(page)
+		img, err := r.pageImage(page)
 		if err != nil {
 			return nil, err
 		}
@@ -309,12 +339,20 @@ func (r *reader) pageFrame(width, height int) (*image.RGBA, error) {
 	return canvas, nil
 }
 
+func (r *reader) pageImage(page int) (image.Image, error) {
+	ctx := r.renderContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return r.book.PageContext(ctx, page)
+}
+
 func (r *reader) scaledPage(page, width int) (image.Image, error) {
 	key := scaledPageKey{page: page, width: width, rotation: r.state.Rotation, inverted: r.state.Inverted && r.book.CanInvertPage(page)}
 	if img, ok := r.scaledPages[key]; ok {
 		return img, nil
 	}
-	img, err := r.book.Page(page)
+	img, err := r.pageImage(page)
 	if err != nil {
 		return nil, err
 	}
@@ -441,6 +479,9 @@ func cbzr_go_native_render_async(handle C.uintptr_t, width, height C.int, view u
 		if !r.closed && frame != nil {
 			result = C.uintptr_t(cgo.NewHandle(frame))
 		} else {
+			if frame != nil {
+				frame.cancel()
+			}
 			C.free(pixels)
 			pixels, length = nil, 0
 		}
@@ -448,6 +489,9 @@ func cbzr_go_native_render_async(handle C.uintptr_t, width, height C.int, view u
 		C.cbzr_native_frame_done(view, generation, result, pixels, width, height, length, blocked)
 	})
 }
+
+//export cbzr_go_native_cancel_render
+func cbzr_go_native_cancel_render(handle C.uintptr_t) { readerFor(handle).cancelRender() }
 
 //export cbzr_go_native_accept_frame
 func cbzr_go_native_accept_frame(handle C.uintptr_t) C.int {
@@ -463,7 +507,11 @@ func cbzr_go_native_show_frame(handle C.uintptr_t) {
 }
 
 //export cbzr_go_native_release_frame
-func cbzr_go_native_release_frame(handle C.uintptr_t) { cgo.Handle(handle).Delete() }
+func cbzr_go_native_release_frame(handle C.uintptr_t) {
+	h := cgo.Handle(handle)
+	h.Value().(*renderedFrame).cancel()
+	h.Delete()
+}
 
 //export cbzr_go_native_click
 func cbzr_go_native_click(handle C.uintptr_t, x, y C.double, view unsafe.Pointer, generation C.uint64_t) {
@@ -587,6 +635,14 @@ func cbzr_go_native_event(handle C.uintptr_t, event C.int) {
 		r.pan(-1, 0)
 	case eventPanRight:
 		r.pan(1, 0)
+	}
+	if r.closed {
+		if r.renderCancel != nil {
+			r.renderCancel()
+		}
+		if r.prefetchCancel != nil {
+			r.prefetchCancel()
+		}
 	}
 }
 

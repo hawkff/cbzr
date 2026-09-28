@@ -8,6 +8,7 @@
 #include <stdlib.h>
 
 extern void cbzr_go_native_render_async(uintptr_t handle, int width, int height, void *view, uint64_t generation);
+extern void cbzr_go_native_cancel_render(uintptr_t handle);
 extern int cbzr_go_native_accept_frame(uintptr_t frame);
 extern void cbzr_go_native_show_frame(uintptr_t frame);
 extern void cbzr_go_native_release_frame(uintptr_t frame);
@@ -147,6 +148,7 @@ static CGImageRef cbzrCreateImage(void *pixels, int width, int height, size_t le
         self.frameHeight = height;
         self.frameGeneration++;
         self.needsFrame = YES;
+        if (self.rendering) cbzr_go_native_cancel_render(self.handle);
     }
     if (self.rendering || !self.needsFrame) return;
     self.rendering = YES;
@@ -171,6 +173,7 @@ static CGImageRef cbzrCreateImage(void *pixels, int width, int height, size_t le
     if (!self.closing) {
         self.frameGeneration++;
         self.needsFrame = YES;
+        if (self.rendering) cbzr_go_native_cancel_render(self.handle);
         [self setNeedsDisplay:YES];
     }
 }

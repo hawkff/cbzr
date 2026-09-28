@@ -9,7 +9,7 @@ static int linkPage = -1;
 static double clickX, clickY;
 static void *pendingView;
 static uint64_t pendingGeneration;
-static int renderRequests, acceptedFrames, shownFrames, releasedFrames;
+static int renderRequests, canceledRenders, acceptedFrames, shownFrames, releasedFrames;
 static void *pendingFrameView;
 static uint64_t pendingFrameGeneration;
 static int pendingWidth, pendingHeight;
@@ -21,6 +21,7 @@ void cbzr_go_native_render_async(uintptr_t handle, int width, int height, void *
  pendingWidth = width;
  pendingHeight = height;
 }
+void cbzr_go_native_cancel_render(uintptr_t handle) { canceledRenders++; }
 int cbzr_go_native_accept_frame(uintptr_t frame) { acceptedFrames++; return 1; }
 void cbzr_go_native_show_frame(uintptr_t frame) { shownFrames++; }
 void cbzr_go_native_release_frame(uintptr_t frame) { releasedFrames++; }
@@ -105,7 +106,7 @@ int main(void) {
   [renderView keyDown:key(@"j")];
   [renderView keyDown:key(@"k")];
   paint(renderView);
-  assert(renderRequests == 1 && turns == 0);
+  assert(renderRequests == 1 && turns == 0 && canceledRenders == 2);
   completeFrame();
   assert(acceptedFrames == 0 && releasedFrames == 1);
   paint(renderView);

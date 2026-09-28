@@ -5,6 +5,8 @@ package native
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"errors"
 	"image"
 	"image/png"
 	"math"
@@ -202,8 +204,11 @@ func TestNativeSlowRenderKeepsInputAndShownPageIndependent(t *testing.T) {
 	t.Setenv("CBZR_TEST_NATIVE_STARTED", started)
 	t.Setenv("CBZR_TEST_NATIVE_RELEASE", release)
 	t.Setenv("CBZR_TEST_NATIVE_CONVERTER", converter)
-	script := "#!" + sh + "\nprintf started > \"$CBZR_TEST_NATIVE_STARTED\"\n" +
-		"while [ ! -e \"$CBZR_TEST_NATIVE_RELEASE\" ]; do sleep 0.01; done\n" +
+	script := "#!" + sh + "\nprevious=; page=\n" +
+		"for arg in \"$@\"; do if [ \"$previous\" = -f ]; then page=\"$arg\"; fi; previous=\"$arg\"; done\n" +
+		"if [ \"$page\" = 1 ]; then\n" +
+		"printf started > \"$CBZR_TEST_NATIVE_STARTED\"\n" +
+		"while [ ! -e \"$CBZR_TEST_NATIVE_RELEASE\" ]; do sleep 0.01; done\nfi\n" +
 		"exec \"$CBZR_TEST_NATIVE_CONVERTER\" \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "pdftoppm"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -241,6 +246,7 @@ func TestNativeSlowRenderKeepsInputAndShownPageIndependent(t *testing.T) {
 		r.mu.Lock()
 		r.goTo(1)
 		r.mu.Unlock()
+		r.cancelRender()
 		close(updated)
 	}()
 	select {
@@ -248,17 +254,14 @@ func TestNativeSlowRenderKeepsInputAndShownPageIndependent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("page input waited for rendering")
 	}
-	if err := os.WriteFile(release, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	var old *renderedFrame
 	select {
 	case old = <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("render did not finish")
+	case <-time.After(2 * time.Second):
+		t.Fatal("obsolete conversion blocked the replacement page")
 	}
-	if old == nil || old.snapshot.err != nil || old.accept() {
-		t.Fatal("stale render replaced newer page input")
+	if old == nil || !errors.Is(old.snapshot.err, context.Canceled) || old.accept() {
+		t.Fatal("stale render was not canceled")
 	}
 	start()
 	var frame *renderedFrame

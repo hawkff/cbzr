@@ -2,6 +2,7 @@ package book
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/draw"
@@ -42,6 +43,13 @@ type epubTextPage struct{ lines []epubLine }
 
 func (p epubTextPage) Name() string { return "epub-text.png" }
 func (p epubTextPage) Open() (io.ReadCloser, error) {
+	return p.open(context.Background())
+}
+
+func (p epubTextPage) open(ctx context.Context) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	canvas := image.NewRGBA(image.Rect(0, 0, epubPageWidth, epubPageHeight))
 	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
 	// Retain glyph IDs and positions from pagination; only raster caches are private.
@@ -58,6 +66,9 @@ func (p epubTextPage) Open() (io.ReadCloser, error) {
 			scale := float32(run.Size) / 64 / float32(face.Upem())
 			x := float32(epubMargin) + float32(run.x)/64
 			for _, glyph := range run.Glyphs {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if glyph.GlyphID != font.EmptyGlyph {
 					outline, ok := face.GlyphDataOutline(glyph.GlyphID)
 					ox := x + float32(glyph.XOffset)/64
@@ -112,7 +123,7 @@ func (p epubTextPage) Open() (io.ReadCloser, error) {
 		}
 	}
 	var data bytes.Buffer
-	if err := png.Encode(&data, canvas); err != nil {
+	if err := png.Encode(contextWriter{ctx, &data}, canvas); err != nil {
 		return nil, err
 	}
 	return io.NopCloser(bytes.NewReader(data.Bytes())), nil
