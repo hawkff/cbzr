@@ -557,3 +557,84 @@ func TestEPUBLinkLabelsAndLatinNormalization(t *testing.T) {
 		t.Fatalf("link/normalization text: %q", textEPUBPage(t, b, 0))
 	}
 }
+
+func TestEPUBSelectionAndLinks(t *testing.T) {
+	entries := epubFixture()
+	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", `<p><a href="https://example.com/a?utm_source=x">Second</a> <a href="a.xhtml#note">paragraph</a>.</p><span id="ztail"/>`)
+	replaceEPUB(entries, "OPS/text/a.xhtml", "<p>Last note.</p>", `<p id="note">Last <a href="z.xhtml#missing">note</a> <a href="javascript:alert(1)">x</a>.</p><span id="tail"/>`)
+	b, err := Open(writeEPUB(t, entries, ".epub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	// at returns page fractions two pixels into the glyph of rune n, on the baseline.
+	at := func(line epubLine, n int) (float64, float64) {
+		x0, _, ok := epubSpan(line, line.offset+n, line.offset+n+1)
+		if !ok {
+			t.Fatalf("rune %d of %q has no glyph", n, line.text)
+		}
+		return (float64(x0.Round()) + 2) / epubPageWidth, float64(line.y-1) / epubPageHeight
+	}
+	linkAt := func(page int, line epubLine, n int) (Link, bool) {
+		x, y := at(line, n)
+		return b.LinkAt(page, x, y)
+	}
+	lines := b.textLines(0)
+	last := lines[len(lines)-1]
+	if last.text != "Second paragraph." || len(last.links) != 2 {
+		t.Fatalf("last line: %q %#v", last.text, last.links)
+	}
+	if link, ok := linkAt(0, last, 0); !ok || link.URL != "https://example.com/a?utm_source=x" || link.Page != -1 {
+		t.Fatalf("external link: %#v %v", link, ok)
+	}
+	if link, ok := linkAt(0, last, 7); !ok || link.URL != "" || link.Page != 1 {
+		t.Fatalf("anchor link: %#v %v", link, ok)
+	}
+	if _, ok := linkAt(0, last, 6); ok {
+		t.Fatal("the space between links is a link")
+	}
+	if _, ok := b.LinkAt(0, 0.5, 0.99); ok {
+		t.Fatal("the margin is a link")
+	}
+	notes := b.textLines(1)[0]
+	if link, ok := linkAt(1, notes, 5); !ok || link.Page != 0 {
+		t.Fatalf("missing anchor must lead to the document start: %#v %v", link, ok)
+	}
+	if _, ok := linkAt(1, notes, 10); ok || len(notes.links) != 1 {
+		t.Fatalf("script link survived: %#v", notes.links)
+	}
+	if _, ok := b.LinkAt(2, 0.5, 0.5); ok {
+		t.Fatal("link on a missing page")
+	}
+	if b.anchors["OPS/text/a.xhtml#tail"] != 1 || b.anchors["OPS/text/a.xhtml"] != 1 || b.anchors["OPS/text/z.xhtml"] != 0 || b.anchors["OPS/text/z.xhtml#ztail"] != 0 || len(b.anchors) != 5 {
+		t.Fatalf("anchors: %v", b.anchors)
+	}
+
+	want := "First heading\nHello reader & friends.\nSecond paragraph."
+	text, rects := b.Select(0, 0, 0, 1, 1)
+	if text != want || len(rects) != len(lines) {
+		t.Fatalf("page selection: %q %v", text, rects)
+	}
+	for i, r := range rects {
+		if top, bottom := epubLineBox(lines[i]); r.Min.Y != top || r.Max.Y != bottom || r.Min.X < epubMargin || r.Max.X <= r.Min.X {
+			t.Fatalf("rect %d: %v", i, r)
+		}
+	}
+	if back, _ := b.Select(0, 1, 1, 0, 0); back != want {
+		t.Fatalf("reversed selection: %q", back)
+	}
+	x, y := at(last, 0)
+	if text, _ := b.Select(0, x, y, 1, 1); text != "Second paragraph." {
+		t.Fatalf("selection from a glyph: %q", text)
+	}
+	x3, _ := at(last, 3)
+	if text, _ := b.Select(0, x3, y, 1, 1); text != "ond paragraph." {
+		t.Fatalf("selection inside a word: %q", text)
+	}
+	if text, rects := b.Select(0, x, y, x, y); text != "" || rects != nil {
+		t.Fatalf("empty selection: %q %v", text, rects)
+	}
+	if text, rects := b.Select(2, 0, 0, 1, 1); text != "" || rects != nil {
+		t.Fatalf("missing page selection: %q %v", text, rects)
+	}
+}

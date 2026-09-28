@@ -2,6 +2,7 @@ package ui
 
 import (
 	"archive/zip"
+	"encoding/base64"
 	"errors"
 	"image"
 	"image/png"
@@ -553,7 +554,7 @@ func testEPUBPath(t *testing.T) string {
 	for name, text := range map[string]string{
 		"META-INF/container.xml": `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
 		"book.opf":               `<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="text" href="text.xhtml" media-type="application/xhtml+xml"/><item id="image" href="page.png" media-type="image/png"/></manifest><spine><itemref idref="text"/><itemref idref="image"/><itemref idref="text"/></spine></package>`,
-		"text.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Readable text.</p><p>` + strings.Repeat("scroll ", 30) + `</p></body></html>`,
+		"text.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body><p><a href="https://example.com/read?utm_source=book&amp;id=7">Readable text.</a></p><p>` + strings.Repeat("scroll ", 30) + `</p></body></html>`,
 	} {
 		w, err := z.Create(name)
 		if err != nil {
@@ -855,5 +856,112 @@ func TestEPUBInversionLeavesIllustrationsUnchanged(t *testing.T) {
 	}
 	if red, _, _, _ := img.At(0, 0).RGBA(); red != 0 {
 		t.Fatal("screenshot inverted the EPUB illustration")
+	}
+}
+
+func TestCleanURLStripsTrackingParameters(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://example.com/a?utm_source=x&id=7&fbclid=abc":    "https://example.com/a?id=7",
+		"https://example.com/a?UTM_Campaign=x":                  "https://example.com/a",
+		"https://example.com/a?b=1&a=2#frag":                    "https://example.com/a?b=1&a=2#frag",
+		"https://youtu.be/id?si=track":                          "https://youtu.be/id",
+		"https://example.com/?page=2&utm_medium=email&mc_cid=1": "https://example.com/?page=2",
+		"mailto:someone@example.com":                            "mailto:someone@example.com",
+		"://bad":                                                "://bad",
+	} {
+		if got := cleanURL(raw); got != want {
+			t.Errorf("cleanURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func clipboardText(t *testing.T, view string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(view, "\x1b]52;c;")
+	if !ok {
+		t.Fatal("no clipboard sequence in the frame")
+	}
+	payload, _, _ := strings.Cut(rest, "\x07")
+	text, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(text)
+}
+
+func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
+	opened := ""
+	m := New(render.NewKitty(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, func(u string) error { opened = u; return nil }, false, []string{testEPUBPath(t)})
+	if m.panes[0].book == nil {
+		t.Fatalf("open EPUB: %v", m.panes[0].err)
+	}
+	defer m.panes[0].book.Close()
+	m.width, m.height = 100, 40
+	b := m.panes[0].book
+	apply := func(msg tea.Msg) tea.Cmd {
+		updated, cmd := m.Update(msg)
+		m = updated.(Model)
+		return cmd
+	}
+	apply(m.renderPane(0)())
+	apply(frameReadyMsg{target: m.panes[0], book: b, pane: 0, gen: m.panes[0].gen})
+	if m.panes[0].loading || m.panes[0].res.Rows == 0 {
+		t.Fatal("page did not settle")
+	}
+	lx, ly := -1, -1
+	for y := 0; y < m.height && lx < 0; y++ {
+		for x := 0; x < m.width; x++ {
+			if _, link, ok := m.linkAt(x, y); ok && link.URL != "" {
+				lx, ly = x, y
+				break
+			}
+		}
+	}
+	if lx < 0 {
+		t.Fatal("no cell shows the link")
+	}
+	if _, ok := m.hitAt(0, 0); ok {
+		t.Fatal("the title row maps to the page")
+	}
+
+	apply(tea.MouseMsg{X: lx, Y: ly, Action: tea.MouseActionMotion})
+	if !strings.Contains(m.statusView(), "→ https://example.com/read?id=7") {
+		t.Fatalf("hover status: %q", m.statusView())
+	}
+	apply(tea.MouseMsg{X: 0, Y: 0, Action: tea.MouseActionMotion})
+	if m.hover != "" {
+		t.Fatal("hover kept a stale link")
+	}
+
+	apply(tea.MouseMsg{X: lx, Y: ly, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	apply(tea.MouseMsg{X: lx, Y: ly, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	if opened != "https://example.com/read?id=7" || m.drag != nil || m.panes[0].sel != nil {
+		t.Fatalf("click opened %q", opened)
+	}
+
+	apply(tea.MouseMsg{X: lx, Y: ly, Button: tea.MouseButtonRight, Action: tea.MouseActionPress})
+	if got := clipboardText(t, m.View()); got != "https://example.com/read?id=7" {
+		t.Fatalf("right click copied %q", got)
+	}
+
+	apply(tea.MouseMsg{X: lx, Y: ly, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if cmd := apply(tea.MouseMsg{X: m.width - 1, Y: m.height - 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion}); cmd == nil {
+		t.Fatal("drag did not redraw the highlight")
+	}
+	apply(tea.MouseMsg{X: m.width - 1, Y: m.height - 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	text := clipboardText(t, m.View())
+	if page := strings.Join(b.PageText(0), "\n"); text == "" || !strings.HasSuffix(page, text) || !strings.Contains(m.status, "copied") {
+		t.Fatalf("selection copied %q, status %q", text, m.status)
+	}
+	apply(clipDoneMsg{gen: m.clipGen})
+	if strings.Contains(m.View(), "\x1b]52;") {
+		t.Fatal("clipboard sequence stayed in the frame")
+	}
+	if msg := m.renderPane(0)().(renderedMsg); msg.err != nil || msg.res.Rows == 0 {
+		t.Fatalf("highlighted render: %v", msg.err)
+	}
+	m.panes[0].rot = 1
+	if _, ok := m.hitAt(lx, ly); ok {
+		t.Fatal("rotated pages have no cell mapping")
 	}
 }

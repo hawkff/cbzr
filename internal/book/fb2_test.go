@@ -20,7 +20,7 @@ func fb2Fixture(t *testing.T) string {
 <body>
 <title><p>Fiction Title</p></title>
 <section><title><p>Chapter One</p></title>
-<p>Hello <emphasis>reader</emphasis> &amp; friends.</p>
+<p>Hello <emphasis>reader</emphasis> &amp; <a l:href="#n1">friends</a>.</p>
 <empty-line/>
 <subtitle>* * *</subtitle>
 <poem><title><p>Ode</p></title><stanza><v>First verse</v><v>Second verse</v></stanza></poem>
@@ -78,6 +78,10 @@ func checkFB2(t *testing.T, path, greeting string) {
 		if lines[i].runs[0].font != bundled[style] {
 			t.Fatalf("line %d %q uses the wrong style", i, lines[i].text)
 		}
+	}
+	start := len([]rune(greeting)) + len(" reader & ")
+	if !reflect.DeepEqual(lines[1].links, []epubLink{{start, start + len("friends"), "#n1", true}}) || b.anchors["#n1"] != 4 {
+		t.Fatalf("note link: %#v -> %v", lines[1].links, b.anchors)
 	}
 }
 

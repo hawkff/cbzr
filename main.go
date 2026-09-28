@@ -101,7 +101,8 @@ func main() {
 
 	for {
 		srv.SetBooks(m.Books())
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFPS(120))
+		// All-motion reporting feeds the link hover in the status bar.
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFPS(120))
 		final, err := p.Run()
 		// Free terminal-side images after the program released the tty.
 		for id := uint32(1); id <= 6; id++ {

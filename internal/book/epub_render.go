@@ -31,9 +31,11 @@ type epubRun struct {
 
 type epubLine struct {
 	text        string
+	offset      int // paragraph rune index of the first rune
 	y           int
 	end         bool // last line of its paragraph
 	runs        []epubRun
+	links       []epubLink
 	annotations []epubLine
 }
 type epubTextPage struct{ lines []epubLine }
@@ -178,6 +180,7 @@ type epubLayout struct {
 	segmenter                         shaping.Segmenter
 	lines                             []epubLine
 	y                                 int
+	pending                           []string // anchors waiting for their content to land on a page
 	activeImages                      map[string]bool
 }
 
@@ -187,6 +190,31 @@ func newEPUBLayout(b *Book) (*epubLayout, error) {
 		return nil, err
 	}
 	return &epubLayout{book: b, regular: faces[0], bold: faces[1], italic: faces[2], boldItalic: faces[3], y: epubMargin, activeImages: map[string]bool{}}, nil
+}
+
+// anchor records the page an internal link key leads to.
+func (l *epubLayout) anchor(key string, page int) {
+	if l.book.anchors == nil {
+		l.book.anchors = map[string]int{}
+	}
+	l.book.anchors[key] = page
+}
+
+// place resolves the anchors seen since the last placed content to the page
+// that receives the next line or image.
+func (l *epubLayout) place() {
+	for _, key := range l.pending {
+		l.anchor(key, len(l.book.pages))
+	}
+	l.pending = nil
+}
+
+// settle points anchors after the last content of a document at its last page.
+func (l *epubLayout) settle() {
+	for _, key := range l.pending {
+		l.anchor(key, max(0, len(l.book.pages)-1))
+	}
+	l.pending = nil
 }
 func (l *epubLayout) addPage(e entry) error {
 	if len(l.book.pages) >= maxEPUBPages {
@@ -244,6 +272,7 @@ func (l *epubLayout) addImage(e *epubPackage, name string, resources map[string]
 	if err := l.flushPage(); err != nil {
 		return err
 	}
+	l.place()
 	return l.addPage(e.files[name])
 }
 func epubBlock(name string) bool {
@@ -269,7 +298,9 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	}
 	title := doc.child("head").child("title").allText()
 	first, firstChapter := len(l.book.pages), len(l.book.chaps)
+	l.anchor(name, first)
 	var text epubParagraph
+	var links []epubLink // open anchors; start indexes the current paragraph
 	heading := false
 	italic, bold, pre := 0, 0, 0
 	bullet := false
@@ -283,6 +314,12 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 	flush := func() error {
 		paragraph := text
 		text = epubParagraph{}
+		for i := range links {
+			if links[i].start < len(paragraph.runes) {
+				paragraph.links = append(paragraph.links, epubLink{links[i].start, len(paragraph.runes), links[i].href, links[i].internal})
+			}
+			links[i].start = 0
+		}
 		chapter := -1
 		if heading && pendingChapter >= 0 && strings.TrimSpace(paragraph.String()) != "" {
 			chapter, pendingChapter = pendingChapter, -1
@@ -361,6 +398,24 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			// The bullet joins the item's first text, even inside a nested block.
 			bullet = true
 			defer func() { bullet = false }()
+		}
+		if id := n.attr("id"); id != "" {
+			l.pending = append(l.pending, name+"#"+id)
+		}
+		if n.name.Local == "a" {
+			if id := n.attr("name"); id != "" {
+				l.pending = append(l.pending, name+"#"+id)
+			}
+			if target, internal, ok := epubLinkTarget(name, n.attr("href")); ok {
+				links = append(links, epubLink{start: len(text.runes), href: target, internal: internal})
+				defer func() {
+					link := links[len(links)-1]
+					links = links[:len(links)-1]
+					if link.start < len(text.runes) {
+						text.links = append(text.links, epubLink{link.start, len(text.runes), link.href, link.internal})
+					}
+				}()
+			}
 		}
 		oldHeading := heading
 		heading = heading || isHeading
