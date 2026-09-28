@@ -1,6 +1,7 @@
 package book
 
 import (
+	"context"
 	"math"
 	"net/url"
 	"strconv"
@@ -10,9 +11,9 @@ import (
 // pdfTextLayer reads the words of a page with pdftotext in the crop box
 // space pdftoppm renders, and the link rectangles with pdftohtml. A block of
 // pdftotext is a paragraph; its lines carry a trailing space until the last.
-func pdfTextLayer(path string, page int) []textLine {
+func pdfTextLayer(ctx context.Context, path string, page int) []textLine {
 	n := strconv.Itoa(page)
-	out, err := runTool("pdftotext", "-cropbox", "-bbox-layout", "-f", n, "-l", n, path, "-")
+	out, err := runToolContext(ctx, "pdftotext", "-cropbox", "-bbox-layout", "-f", n, "-l", n, path, "-")
 	if err != nil {
 		return nil
 	}
@@ -26,7 +27,7 @@ func pdfTextLayer(path string, page int) []textLine {
 	if w <= 0 || h <= 0 {
 		return nil
 	}
-	links := pdfLinks(path, page, w, h)
+	links := pdfLinks(ctx, path, page, w, h)
 	var lines []textLine
 	for _, flow := range pg.children {
 		for _, block := range flow.children {
@@ -142,9 +143,9 @@ func pdfLinkTarget(href string) (target string, internal, ok bool) {
 // pdfLinks returns the link rectangles of a page as crop box fractions.
 // pdftohtml works in the media box, so pdfinfo supplies the offset when the
 // boxes differ in size.
-func pdfLinks(path string, page int, cropW, cropH float64) []pdfLink {
+func pdfLinks(ctx context.Context, path string, page int, cropW, cropH float64) []pdfLink {
 	n := strconv.Itoa(page)
-	out, err := runTool("pdftohtml", "-xml", "-i", "-q", "-zoom", "1", "-f", n, "-l", n, "-stdout", path)
+	out, err := runToolContext(ctx, "pdftohtml", "-xml", "-i", "-q", "-zoom", "1", "-f", n, "-l", n, "-stdout", path)
 	if err != nil {
 		return nil
 	}
@@ -157,7 +158,7 @@ func pdfLinks(path string, page int, cropW, cropH float64) []pdfLink {
 	mediaH, _ := strconv.ParseFloat(pg.attr("height"), 64)
 	dx, dy := 0.0, 0.0
 	if math.Abs(mediaW-cropW) > 1 || math.Abs(mediaH-cropH) > 1 {
-		dx, dy = pdfCropOffset(path, page)
+		dx, dy = pdfCropOffset(ctx, path, page)
 	}
 	var links []pdfLink
 	var hrefs func(*epubNode) []string
@@ -189,9 +190,9 @@ func pdfLinks(path string, page int, cropW, cropH float64) []pdfLink {
 
 // pdfCropOffset returns how far the crop box origin sits from the media box
 // origin in display space: left and top, in points.
-func pdfCropOffset(path string, page int) (dx, dy float64) {
+func pdfCropOffset(ctx context.Context, path string, page int) (dx, dy float64) {
 	n := strconv.Itoa(page)
-	out, err := runTool("pdfinfo", "-f", n, "-l", n, "-box", path)
+	out, err := runToolContext(ctx, "pdfinfo", "-f", n, "-l", n, "-box", path)
 	if err != nil {
 		return 0, 0
 	}

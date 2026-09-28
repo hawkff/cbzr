@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestTextLayerCacheIsBounded(t *testing.T) {
@@ -31,6 +32,54 @@ func TestTextLayerCacheIsBounded(t *testing.T) {
 	b.PrepareText(b.Len())
 	if b.lines(-1) != nil || b.lines(b.Len()) != nil {
 		t.Fatal("invalid page has a text layer")
+	}
+}
+
+func TestCloseCancelsPDFPreparation(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("shell helper needs sh")
+	}
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv("CBZR_TEST_TEXT_STARTED", started)
+	script := "#!" + sh + "\nprintf started > \"$CBZR_TEST_TEXT_STARTED\"\nexec sleep 5\n"
+	if err := os.WriteFile(filepath.Join(dir, "pdftotext"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	b := &Book{pages: []entry{toolPage{path: "synthetic.pdf", page: 1}}}
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		b.Close()
+		select {
+		case <-done:
+		case <-time.After(6 * time.Second):
+			t.Error("text extraction did not stop")
+		}
+	})
+	go func() { b.PrepareText(0); close(done) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("text converter did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("closing the book left the converter running")
+	}
+	b.PrepareText(0)
+	if b.TextReady(0) || len(b.layerLoading) != 0 {
+		t.Fatal("closed book cached or restarted a canceled extraction")
 	}
 }
 
