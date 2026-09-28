@@ -121,6 +121,7 @@ type Model struct {
 	hover          string // destination of the link under the mouse
 	clip           []byte // pending OSC 52 clipboard write
 	clipGen        int
+	actionGen      int // discard deferred text actions after newer input
 }
 
 type renderedMsg struct {
@@ -426,6 +427,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hover = string(msg)
 		return m, nil
 
+	case textActionMsg:
+		return m.finishTextAction(msg)
+
 	case clipDoneMsg:
 		if msg.gen == m.clipGen {
 			m.clip = nil
@@ -447,6 +451,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMouse(msg)
 
 	case tea.KeyMsg:
+		m.actionGen++
 		// Terminals can batch fast typing (or paste) into one rune message;
 		// replay it as individual keys so counts like "2j" still work.
 		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
@@ -491,6 +496,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.mode != modeRead {
 		return m, nil
+	}
+	if msg.Action == tea.MouseActionPress {
+		m.actionGen++
+		m.status = ""
 	}
 	target := 0
 	if m.split && msg.X > (m.width-1)/2 {

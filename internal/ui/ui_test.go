@@ -978,7 +978,8 @@ func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
 	}
 }
 
-func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
+func testPDFPath(t *testing.T) string {
+	t.Helper()
 	for _, tool := range []string{"pdfinfo", "pdftoppm", "pdftotext", "pdftohtml"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not installed", tool)
@@ -986,14 +987,20 @@ func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
 	}
 	content := "BT /F1 24 Tf 10 40 Td (Hello reader) Tj ET"
 	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj\n" +
-		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
+		"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R/Annots[7 0 R]>>endobj\n" +
 		"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n" +
 		"5 0 obj<</Length " + strconv.Itoa(len(content)) + ">>stream\n" + content + "\nendstream\nendobj\n" +
-		"6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\ntrailer<</Root 1 0 R>>\n"
+		"6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
+		"7 0 obj<</Type/Annot/Subtype/Link/Rect[10 35 160 65]/Border[0 0 0]/A<</S/URI/URI(https://example.com/read)>>>>endobj\ntrailer<</Root 1 0 R>>\n"
 	path := filepath.Join(t.TempDir(), "words.pdf")
 	if err := os.WriteFile(path, []byte(pdf), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
+
+func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
+	path := testPDFPath(t)
 	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, false, []string{path})
 	if m.panes[0].book == nil {
 		t.Fatalf("open PDF: %v", m.panes[0].err)

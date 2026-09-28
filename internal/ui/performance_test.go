@@ -56,6 +56,64 @@ func TestChromeChangesKeepImageTransmissionLineStable(t *testing.T) {
 	}
 }
 
+func TestPDFTextActionsWaitWithoutBlockingInput(t *testing.T) {
+	path := testPDFPath(t)
+	for _, action := range []string{"select", "follow", "copy link"} {
+		t.Run(action, func(t *testing.T) {
+			b, err := book.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			m := testModel()
+			p := m.panes[0]
+			p.book = b
+			opened := ""
+			m.openBrowser = func(url string) error { opened = url; return nil }
+			var sel *selection
+			if action == "select" {
+				sel = &selection{page: 0, x1: 1, y1: 1}
+				p.sel = sel
+			}
+			h := hit{pane: 0, page: 0, x: 0.1, y: 0.5}
+			updated, cmd := m.textAction(h, sel, action == "copy link")
+			m = updated.(Model)
+			if cmd == nil || b.TextReady(0) || m.status != "loading text…" {
+				t.Fatal("cold PDF action did not defer its extraction")
+			}
+			if sel != nil {
+				sel.x1 = 0 // a later frame cannot change the queued selection
+			}
+			msg := cmd().(textActionMsg)
+			p.gen++ // finishing a render must not cancel the queued input
+			updated, _ = m.Update(msg)
+			m = updated.(Model)
+			switch action {
+			case "follow":
+				if opened != "https://example.com/read" {
+					t.Fatalf("queued link opened %q", opened)
+				}
+			case "select":
+				if got := clipboardText(t, m.View()); got != "Hello reader" {
+					t.Fatalf("queued selection copied %q", got)
+				}
+			case "copy link":
+				if got := clipboardText(t, m.View()); got != "https://example.com/read" {
+					t.Fatalf("queued link copied %q", got)
+				}
+			}
+			opened, m.clip = "", nil
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(Model)
+			updated, _ = m.Update(msg)
+			m = updated.(Model)
+			if opened != "" || m.clip != nil {
+				t.Fatal("newer input did not cancel a deferred action")
+			}
+		})
+	}
+}
+
 func TestFilterMouseSkipsUnchangedHoverOnly(t *testing.T) {
 	m := testModel()
 	motion := tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonNone}
