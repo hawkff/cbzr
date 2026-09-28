@@ -67,8 +67,8 @@ type Book struct {
 	layers       map[int][]textLine // immutable text layers by page
 	layerOrder   []int
 	layerLoading map[int]chan struct{}
-	textContext  context.Context
-	cancelText   context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
 	closed       bool
 }
 
@@ -213,11 +213,11 @@ func Open(path string) (*Book, error) {
 	}, nil
 }
 
-// Close cancels text extraction and releases the underlying archive.
+// Close cancels converters and releases the underlying archive.
 func (b *Book) Close() error {
 	b.mu.Lock()
 	b.closed = true
-	cancel, arc := b.cancelText, b.arc
+	cancel, arc := b.cancel, b.arc
 	b.arc = nil
 	b.mu.Unlock()
 	if cancel != nil {
@@ -227,6 +227,14 @@ func (b *Book) Close() error {
 		return arc.Close()
 	}
 	return nil
+}
+
+// contextLocked requires b.mu.
+func (b *Book) contextLocked() context.Context {
+	if b.ctx == nil {
+		b.ctx, b.cancel = context.WithCancel(context.Background())
+	}
+	return b.ctx
 }
 
 // Len returns the number of pages.
@@ -268,6 +276,10 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
 	cached, ok := b.encoded[i]
 	b.mu.Unlock()
 	if ok {
@@ -285,13 +297,24 @@ func (b *Book) pageBytes(i int) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
 	cached, ok := b.encoded[i]
+	ctx := b.contextLocked()
 	b.mu.Unlock()
 	if ok {
 		return cached.data, cached.mime, nil
 	}
 	e := b.pages[i]
-	r, err := e.Open()
+	var r io.ReadCloser
+	var err error
+	if p, ok := e.(toolPage); ok {
+		r, err = p.open(ctx)
+	} else {
+		r, err = e.Open()
+	}
 	if err != nil {
 		return nil, "", err
 	}
@@ -309,6 +332,10 @@ func (b *Book) pageBytes(i int) ([]byte, string, error) {
 	}
 	mime := "image/" + format
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
 	if b.encoded == nil {
 		b.encoded = make(map[int]encodedPage)
 	}
@@ -331,6 +358,10 @@ func (b *Book) Page(i int) (image.Image, error) {
 		return nil, fmt.Errorf("page %d out of range", i)
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, os.ErrClosed
+	}
 	if img, ok := b.cache[i]; ok {
 		b.mu.Unlock()
 		return img, nil
@@ -340,6 +371,10 @@ func (b *Book) Page(i int) (image.Image, error) {
 	unlock := b.lockPage(i)
 	defer unlock()
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, os.ErrClosed
+	}
 	if img, ok := b.cache[i]; ok {
 		b.mu.Unlock()
 		return img, nil
@@ -355,6 +390,10 @@ func (b *Book) Page(i int) (image.Image, error) {
 	}
 
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, os.ErrClosed
+	}
 	if b.cache == nil {
 		b.cache = make(map[int]image.Image)
 	}

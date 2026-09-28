@@ -7,7 +7,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-extern void *cbzr_go_native_render(uintptr_t handle, int width, int height, size_t *length, double *blockedScroll);
+extern void cbzr_go_native_render_async(uintptr_t handle, int width, int height, void *view, uint64_t generation);
+extern int cbzr_go_native_accept_frame(uintptr_t frame);
+extern void cbzr_go_native_show_frame(uintptr_t frame);
+extern void cbzr_go_native_release_frame(uintptr_t frame);
 extern int cbzr_go_native_is_webtoon(uintptr_t handle);
 extern void cbzr_go_native_scroll(uintptr_t handle, double pixels);
 extern void cbzr_go_native_turn(uintptr_t handle, int delta);
@@ -36,6 +39,28 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     free((void *)data);
 }
 
+static CGImageRef cbzrCreateImage(void *pixels, int width, int height, size_t length) {
+    if (!pixels || width < 1 || height < 1 || length < (size_t)width * (size_t)height * 4) {
+        free(pixels);
+        return NULL;
+    }
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, pixels, length, cbzrReleasePixels);
+    if (!provider) {
+        free(pixels);
+        return NULL;
+    }
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    if (!colorSpace) {
+        CGDataProviderRelease(provider);
+        return NULL;
+    }
+    CGImageRef image = CGImageCreate(width, height, 8, 32, (size_t)width * 4, colorSpace,
+        kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast, provider, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(colorSpace);
+    CGDataProviderRelease(provider);
+    return image;
+}
+
 @interface CBZRView : NSView <NSWindowDelegate>
 @property(nonatomic) uintptr_t handle;
 @property(nonatomic) double pendingScroll;
@@ -49,10 +74,19 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
 @property(nonatomic) BOOL mousePressed;
 @property(nonatomic) NSPoint mousePoint;
 @property(nonatomic) uint64_t linkGeneration;
+@property(nonatomic) uint64_t frameGeneration;
+@property(nonatomic) BOOL rendering;
+@property(nonatomic) BOOL needsFrame;
+@property(nonatomic) int frameWidth;
+@property(nonatomic) int frameHeight;
+@property(nonatomic, assign) CGImageRef frameImage;
+@property(nonatomic) uintptr_t frameHandle;
 @property(nonatomic, strong) NSTimer *animationTimer;
 @property(nonatomic, strong) NSTimer *pageResetTimer;
 - (instancetype)initWithFrame:(NSRect)frame handle:(uintptr_t)handle;
 - (void)renderNow;
+- (void)requestFrame;
+- (void)releaseFrame;
 - (void)queueScroll:(double)pixels;
 - (void)cancelScroll;
 - (void)discardBlockedScroll:(double)pixels;
@@ -66,6 +100,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     self = [super initWithFrame:frame];
     if (self) {
         _handle = handle;
+        _needsFrame = YES;
     }
     return self;
 }
@@ -80,59 +115,62 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
 
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
-    self.hasFrame = NO;
-    if (self.closing) {
-        return;
-    }
+    if (self.closing) return;
+    [self requestFrame];
     NSRect bounds = self.bounds;
-    CGFloat scale = self.window.backingScaleFactor ?: 1.0;
-    int width = MAX(1, (int)llround(NSWidth(bounds) * scale));
-    int height = MAX(1, (int)llround(NSHeight(bounds) * scale));
-    size_t length = 0;
-    double blockedScroll = 0;
-    void *pixels = cbzr_go_native_render(self.handle, width, height, &length, &blockedScroll);
-    [self discardBlockedScroll:blockedScroll];
-    if (!pixels || length < (size_t)width * (size_t)height * 4) {
-        [[NSColor blackColor] setFill];
-        NSRectFill(bounds);
-        free(pixels);
-        return;
-    }
-
-    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, pixels, length, cbzrReleasePixels);
-    if (!provider) {
-        free(pixels);
-        return;
-    }
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    if (!colorSpace) {
-        CGDataProviderRelease(provider);
-        return;
-    }
-    CGImageRef image = CGImageCreate(
-        width, height, 8, 32, (size_t)width * 4, colorSpace,
-        kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast,
-        provider, NULL, false, kCGRenderingIntentDefault
-    );
-    CGColorSpaceRelease(colorSpace);
-    CGDataProviderRelease(provider);
-
-    if (image) {
-        NSGraphicsContext *graphics = NSGraphicsContext.currentContext;
-        CGContextRef context = graphics.CGContext;
+    [[NSColor blackColor] setFill];
+    NSRectFill(bounds);
+    if (self.frameImage) {
+        CGContextRef context = NSGraphicsContext.currentContext.CGContext;
         CGContextSaveGState(context);
         CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
         CGContextTranslateCTM(context, 0, NSHeight(bounds));
         CGContextScaleCTM(context, 1, -1);
-        CGContextDrawImage(context, NSMakeRect(0, 0, NSWidth(bounds), NSHeight(bounds)), image);
+        CGContextDrawImage(context, NSMakeRect(0, 0, NSWidth(bounds), NSHeight(bounds)), self.frameImage);
         CGContextRestoreGState(context);
-        CGImageRelease(image);
-        self.hasFrame = YES;
     }
+    self.hasFrame = self.frameImage != NULL;
+    if (self.frameHandle) {
+        cbzr_go_native_show_frame(self.frameHandle);
+        cbzr_go_native_release_frame(self.frameHandle);
+        self.frameHandle = 0;
+    }
+}
+
+- (void)requestFrame {
+    if (self.closing) return;
+    CGFloat scale = self.window.backingScaleFactor ?: 1.0;
+    int width = MAX(1, (int)llround(NSWidth(self.bounds) * scale));
+    int height = MAX(1, (int)llround(NSHeight(self.bounds) * scale));
+    if (width != self.frameWidth || height != self.frameHeight) {
+        self.frameWidth = width;
+        self.frameHeight = height;
+        self.frameGeneration++;
+        self.needsFrame = YES;
+    }
+    if (self.rendering || !self.needsFrame) return;
+    self.rendering = YES;
+    self.needsFrame = NO;
+    cbzr_go_native_render_async(self.handle, width, height,
+                                 (__bridge_retained void *)self, self.frameGeneration);
+}
+
+- (void)releaseFrame {
+    if (self.frameImage) CGImageRelease(self.frameImage);
+    self.frameImage = NULL;
+    if (self.frameHandle) cbzr_go_native_release_frame(self.frameHandle);
+    self.frameHandle = 0;
+}
+
+- (void)dealloc {
+    if (_frameImage) CGImageRelease(_frameImage);
+    if (_frameHandle) cbzr_go_native_release_frame(_frameHandle);
 }
 
 - (void)renderNow {
     if (!self.closing) {
+        self.frameGeneration++;
+        self.needsFrame = YES;
         [self setNeedsDisplay:YES];
     }
 }
@@ -143,8 +181,11 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
 }
 
 - (void)setFrameSize:(NSSize)size {
-    [self cancelLink];
-    self.hasFrame = NO;
+    if (!NSEqualSizes(size, self.frame.size)) {
+        [self cancelLink];
+        self.hasFrame = NO;
+        [self renderNow];
+    }
     [super setFrameSize:size];
 }
 
@@ -254,6 +295,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
                 CGFloat scale = self.window.backingScaleFactor ?: 1.0;
                 CGFloat fraction = (c == 'J' || c == 'K') ? 0.5 : 1.0;
                 [self queueScroll:NSHeight(self.bounds) * scale * fraction * count];
+                return;
             } else {
                 cbzr_go_native_turn(self.handle, count);
             }
@@ -329,6 +371,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
             [timer invalidate];
             return;
         }
+        if (view.rendering || view.needsFrame) return;
         double pending = view.pendingScroll;
         view.scrollVelocity = (view.scrollVelocity + pending * 0.075) * 0.8;
         double step = fmax(-64.0, fmin(64.0, view.scrollVelocity));
@@ -370,6 +413,7 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     [self cancelScroll];
     [self.pageResetTimer invalidate];
     self.pageResetTimer = nil;
+    [self releaseFrame];
 
     NSWindow *window = self.window;
     window.delegate = nil;
@@ -383,6 +427,28 @@ static void cbzrReleasePixels(void *info, const void *data, size_t size) {
     return NO;
 }
 @end
+
+void cbzr_native_frame_done(void *context, uint64_t generation, uintptr_t frame, void *pixels,
+                           int width, int height, size_t length, double blockedScroll) {
+    @autoreleasepool {
+        CBZRView *view = (__bridge_transfer CBZRView *)context;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            view.rendering = NO;
+            if (view.closing || generation != view.frameGeneration || !frame || !cbzr_go_native_accept_frame(frame)) {
+                free(pixels);
+                if (frame) cbzr_go_native_release_frame(frame);
+                if (!view.closing && frame) view.needsFrame = YES;
+            } else {
+                CGImageRef image = cbzrCreateImage(pixels, width, height, length);
+                [view releaseFrame];
+                view.frameImage = image;
+                view.frameHandle = frame;
+                [view discardBlockedScroll:blockedScroll];
+            }
+            if (!view.closing) [view setNeedsDisplay:YES];
+        });
+    }
+}
 
 void cbzr_native_link_done(void *context, uint64_t generation, int page, const char *url) {
     @autoreleasepool {
@@ -399,7 +465,9 @@ void cbzr_native_link_done(void *context, uint64_t generation, int page, const c
                 NSURL *target = [NSURL URLWithString:destination];
                 if (target && [@[@"http", @"https", @"mailto"] containsObject:target.scheme.lowercaseString]) {
                     [view cancelScroll];
-                    [NSWorkspace.sharedWorkspace openURL:target];
+                    [NSWorkspace.sharedWorkspace openURL:target
+                                             configuration:[NSWorkspaceOpenConfiguration configuration]
+                                         completionHandler:nil];
                 }
             }
         });
@@ -444,8 +512,17 @@ int cbzr_native_run(uintptr_t handle, const char *title) {
         });
         [app run];
 
+        view.closing = YES;
         [view.animationTimer invalidate];
         [view.pageResetTimer invalidate];
+        [view releaseFrame];
+        // Dispose queued frames before Go releases the window's reader handle.
+        __block BOOL drained = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
+        while (!drained) {
+            [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
         window.delegate = nil;
         window.contentView = nil;
         [previousApp activateWithOptions:0];

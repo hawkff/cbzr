@@ -9,7 +9,21 @@ static int linkPage = -1;
 static double clickX, clickY;
 static void *pendingView;
 static uint64_t pendingGeneration;
-void *cbzr_go_native_render(uintptr_t handle, int width, int height, size_t *length, double *blockedScroll) { *length = 0; *blockedScroll = 0; return NULL; }
+static int renderRequests, acceptedFrames, shownFrames, releasedFrames;
+static void *pendingFrameView;
+static uint64_t pendingFrameGeneration;
+static int pendingWidth, pendingHeight;
+void cbzr_go_native_render_async(uintptr_t handle, int width, int height, void *view, uint64_t generation) {
+ assert(pendingFrameView == NULL);
+ renderRequests++;
+ pendingFrameView = view;
+ pendingFrameGeneration = generation;
+ pendingWidth = width;
+ pendingHeight = height;
+}
+int cbzr_go_native_accept_frame(uintptr_t frame) { acceptedFrames++; return 1; }
+void cbzr_go_native_show_frame(uintptr_t frame) { shownFrames++; }
+void cbzr_go_native_release_frame(uintptr_t frame) { releasedFrames++; }
 int cbzr_go_native_is_webtoon(uintptr_t handle) { return webtoon; }
 void cbzr_go_native_scroll(uintptr_t handle, double pixels) {}
 void cbzr_go_native_turn(uintptr_t handle, int delta) { turns += delta; }
@@ -47,10 +61,7 @@ static NSEvent *mouse(NSEventType type) {
  return [NSEvent mouseEventWithType:type location:NSMakePoint(50, 40) modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:0 clickCount:1 pressure:1];
 }
 
-static void completeLink(int page) {
- assert(pendingView != NULL);
- cbzr_native_link_done(pendingView, pendingGeneration, page, NULL);
- pendingView = NULL;
+static void drainMainQueue(void) {
  __block BOOL drained = NO;
  dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
@@ -60,8 +71,64 @@ static void completeLink(int page) {
  assert(drained);
 }
 
+static void completeLink(int page) {
+ assert(pendingView != NULL);
+ cbzr_native_link_done(pendingView, pendingGeneration, page, NULL);
+ pendingView = NULL;
+ drainMainQueue();
+}
+
+static void completeFrame(void) {
+ assert(pendingFrameView != NULL);
+ size_t length = (size_t)pendingWidth * pendingHeight * 4;
+ cbzr_native_frame_done(pendingFrameView, pendingFrameGeneration, renderRequests,
+                        calloc(1, length), pendingWidth, pendingHeight, length, 0);
+ pendingFrameView = NULL;
+ drainMainQueue();
+}
+
+static void paint(CBZRView *view) {
+ NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+     pixelsWide:100 pixelsHigh:80 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+     isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+ [NSGraphicsContext saveGraphicsState];
+ NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+ [view drawRect:view.bounds];
+ [NSGraphicsContext restoreGraphicsState];
+}
+
 int main(void) {
  @autoreleasepool {
+  CBZRView *renderView = [[CBZRView alloc] initWithFrame:NSMakeRect(0, 0, 100, 80) handle:0];
+  paint(renderView);
+  assert(renderRequests == 1 && renderView.rendering && !renderView.hasFrame);
+  [renderView keyDown:key(@"j")];
+  [renderView keyDown:key(@"k")];
+  paint(renderView);
+  assert(renderRequests == 1 && turns == 0);
+  completeFrame();
+  assert(acceptedFrames == 0 && releasedFrames == 1);
+  paint(renderView);
+  assert(renderRequests == 2 && renderView.rendering);
+  completeFrame();
+  assert(acceptedFrames == 1 && shownFrames == 0);
+  paint(renderView);
+  assert(renderView.hasFrame && shownFrames == 1 && releasedFrames == 2);
+  paint(renderView);
+  assert(renderRequests == 2 && shownFrames == 1);
+  [renderView renderNow];
+  paint(renderView);
+  assert(renderRequests == 3 && renderView.hasFrame);
+  webtoon = 1;
+  [renderView queueScroll:800];
+  [renderView.animationTimer fire];
+  assert(renderView.pendingScroll == 800);
+  [renderView cancelScroll];
+  webtoon = 0;
+  renderView.closing = YES;
+  [renderView releaseFrame];
+  completeFrame();
+  assert(acceptedFrames == 1 && releasedFrames == 3 && renderView.frameImage == NULL);
   CBZRView *view = [[CBZRView alloc] initWithFrame:NSMakeRect(0, 0, 100, 80) handle:0];
   [view mouseDown:mouse(NSEventTypeLeftMouseDown)];
   [view mouseUp:mouse(NSEventTypeLeftMouseUp)];

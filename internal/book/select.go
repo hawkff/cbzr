@@ -1,7 +1,6 @@
 package book
 
 import (
-	"context"
 	"net/url"
 	"strconv"
 	"strings"
@@ -132,10 +131,7 @@ func (b *Book) PrepareText(i int) {
 		}
 		done := make(chan struct{})
 		b.layerLoading[i] = done
-		if b.textContext == nil {
-			b.textContext, b.cancelText = context.WithCancel(context.Background())
-		}
-		ctx := b.textContext
+		ctx := b.contextLocked()
 		b.mu.Unlock()
 
 		var lines []textLine
