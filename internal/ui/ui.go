@@ -188,8 +188,8 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 			}
 		}
 	}
-	if m.panes[1].book != nil {
-		m.split = true
+	if len(paths) > 1 {
+		m.split = true // a second book that failed to open still shows its error
 	} else {
 		m.webtoon = resumeWebtoon
 	}
