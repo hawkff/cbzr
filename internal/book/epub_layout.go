@@ -25,6 +25,7 @@ type epubParagraph struct {
 	links        []epubLink
 	italic, bold bool // every text node so far carried the style
 	styled       bool
+	chapter      *Chapter // destination of the heading's first line
 }
 
 // style narrows the paragraph style to what all of its text shares.
@@ -368,6 +369,9 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 			if err := l.flushPage(); err != nil {
 				return err
 			}
+		}
+		if start == 0 && p.chapter != nil {
+			p.chapter.Page = len(l.book.pages)
 		}
 		l.place(wrapped.NextLine, done)
 		for i := range line.annotations {

@@ -39,6 +39,10 @@ func runTool(name string, args ...string) ([]byte, error) {
 }
 
 func runToolContext(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return runToolLimited(ctx, maxPageBytes, name, args...)
+}
+
+func runToolLimited(ctx context.Context, limit int64, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, toolTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -54,7 +58,7 @@ func runToolContext(ctx context.Context, name string, args ...string) ([]byte, e
 		}
 		return nil, err
 	}
-	out, readErr := readBounded(stdout, maxPageBytes)
+	out, readErr := readBounded(stdout, limit)
 	if readErr != nil {
 		cancel() // stop a writer that outgrew the limit before waiting for it
 	}
@@ -162,15 +166,16 @@ func ppmToPNG(data []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// openDOC lays the paragraphs antiword extracts out as text pages.
+// openDOC keeps the headings in antiword's DocBook output.
 func openDOC(path string) (*Book, error) {
-	out, err := runTool("antiword", "-w", "0", "-m", "UTF-8.txt", path)
+	out, err := runTool("antiword", "-x", "db", path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
-	body := &epubNode{name: xhtml("body")}
-	for _, line := range strings.Split(string(out), "\n") {
-		body.children = append(body.children, &epubNode{name: xhtml("p"), children: []*epubNode{{text: line}}})
+	doc, err := parseXML(out, maxDocumentTokens)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
+	body := &epubNode{name: xhtml("body"), children: []*epubNode{docbookNode(doc, 0)}}
 	return layoutBook(newBook(path, true), &epubPackage{}, body, nil)
 }

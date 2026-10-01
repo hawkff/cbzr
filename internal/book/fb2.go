@@ -120,10 +120,10 @@ func openFB2(data []byte, path string) (*Book, error) {
 		images[n.attr("id")] = name
 	}
 	body := &epubNode{name: xhtml("body")}
-	body.children = append(body.children, fb2Node(info.child("coverpage"), "title-info", images, false))
+	body.children = append(body.children, fb2Node(info.child("coverpage"), "title-info", images, false, 0))
 	for _, n := range doc.children {
 		if n.name.Local == "body" {
-			body.children = append(body.children, fb2Node(n, "FictionBook", images, n.attr("name") != ""))
+			body.children = append(body.children, fb2Node(n, "FictionBook", images, n.attr("name") != "", 0))
 		}
 	}
 	return layoutBook(b, pkg, body, resources)
@@ -132,11 +132,14 @@ func openFB2(data []byte, path string) (*Book, error) {
 // fb2Node converts one FictionBook element to XHTML. Section and body titles
 // become page-breaking headings; other titles and subtitles stay bold text.
 // Ids and link targets carry over.
-func fb2Node(n *epubNode, parent string, images map[string]string, notes bool) *epubNode {
+func fb2Node(n *epubNode, parent string, images map[string]string, notes bool, depth int) *epubNode {
 	if n.name.Local == "" {
 		return &epubNode{text: n.text}
 	}
 	out := &epubNode{name: xhtml("span")}
+	if n.name.Local == "section" {
+		depth++
+	}
 	for _, a := range n.attrs {
 		if a.Name.Local == "id" || a.Name.Local == "href" && n.name.Local == "a" {
 			out.attrs = append(out.attrs, a)
@@ -156,17 +159,18 @@ func fb2Node(n *epubNode, parent string, images map[string]string, notes bool) *
 		out.name.Local = "p"
 		if n.name.Local == "title" && !notes && (parent == "section" || parent == "body") {
 			out.name.Local = "h2"
+			out.attrs = append(out.attrs, xml.Attr{Name: xml.Name{Local: "data-cbzr-depth"}, Value: strconv.Itoa(max(0, depth-1))})
 			break
 		}
 		bold := &epubNode{name: xhtml("b")}
 		for _, c := range n.children {
-			bold.children = append(bold.children, fb2Node(c, n.name.Local, images, notes))
+			bold.children = append(bold.children, fb2Node(c, n.name.Local, images, notes, depth))
 		}
 		out.children = []*epubNode{bold}
 		return out
 	}
 	for _, c := range n.children {
-		out.children = append(out.children, fb2Node(c, n.name.Local, images, notes))
+		out.children = append(out.children, fb2Node(c, n.name.Local, images, notes, depth))
 	}
 	return out
 }

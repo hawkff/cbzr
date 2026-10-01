@@ -66,7 +66,7 @@ func checkFB2(t *testing.T, path, greeting string) {
 		t.Fatalf("notes page: %#v", got)
 	}
 	chapters, err := b.Chapters()
-	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"Fiction Title", 1}, {"Chapter One", 2}}) {
+	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"Fiction Title", 1, 0}, {"Chapter One", 2, 0}}) {
 		t.Fatalf("chapters: %#v, %v", chapters, err)
 	}
 	bundled, err := epubBundledFonts()

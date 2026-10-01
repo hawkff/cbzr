@@ -51,7 +51,7 @@ func TestOpenDOCX(t *testing.T) {
 		t.Fatalf("last page: %#v", got)
 	}
 	chapters, err := b.Chapters()
-	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"Heading One", 0}}) {
+	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"Heading One", 0, 0}}) {
 		t.Fatalf("chapters: %#v, %v", chapters, err)
 	}
 	bundled, err := epubBundledFonts()

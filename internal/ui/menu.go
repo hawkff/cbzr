@@ -25,13 +25,14 @@ type menuItem struct {
 
 // menu is a modal list with vim navigation and fuzzy filtering.
 type menu struct {
-	kind   menuKind
-	title  string
-	all    []menuItem // unfiltered
-	items  []menuItem // filtered view
-	filter string
-	cursor int
-	top    int
+	kind    menuKind
+	title   string
+	all     []menuItem // unfiltered
+	items   []menuItem // filtered view
+	filter  string
+	cursor  int
+	top     int
+	loading bool
 }
 
 // fuzzyScore matches query as a case-insensitive subsequence of s.
@@ -110,7 +111,9 @@ func (mn *menu) view(width, height int, footer string) string {
 	}
 	sb.WriteString(titleActive.Render(head))
 	sb.WriteString("\n")
-	if len(mn.items) == 0 {
+	if mn.loading {
+		sb.WriteString(dim.Render("  loading chapters…"))
+	} else if len(mn.items) == 0 {
 		sb.WriteString(dim.Render("  (no matches)"))
 	}
 	end := min(len(mn.items), mn.top+rows)

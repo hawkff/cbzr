@@ -311,6 +311,7 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 			return nil, fmt.Errorf("EPUB invalid spine linear value")
 		}
 		first := len(b.pages)
+		layout.anchor(item.name, first)
 		switch item.media {
 		case "application/xhtml+xml", "image/svg+xml":
 			doc, err := e.document(item.name, maxEPUBDocumentBytes)
@@ -339,6 +340,7 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 	if !linear || len(b.pages) == 0 {
 		return nil, fmt.Errorf("EPUB needs a nonempty spine with linear content")
 	}
+	b.epubChapters(e, opf, manifest)
 	// Keep the EPUB chapters indexed with the spine; skip comic metadata fallback.
 	b.chapOnce.Do(func() {})
 	return b, nil
