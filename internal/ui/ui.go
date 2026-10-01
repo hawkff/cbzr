@@ -845,6 +845,9 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if it.path != "" && (p.book == nil || p.book.Path != it.path) {
 			mm, cmd := m.openBook(m.active, it.path, nil)
 			mdl := mm.(Model)
+			if b := mdl.panes[mdl.active].book; b == nil || b.Path != it.path {
+				return mdl, cmd // the open failed; keep the current page
+			}
 			mdl2, cmd2 := mdl.goTo(mdl.active, it.page)
 			return mdl2, tea.Batch(cmd, cmd2)
 		}
