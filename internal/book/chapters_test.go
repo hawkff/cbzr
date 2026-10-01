@@ -303,6 +303,18 @@ func TestComicChapterFallbacks(t *testing.T) {
 	}
 }
 
+func TestDOCEmphasisRoles(t *testing.T) {
+	for role, want := range map[string]string{"": "em", "italic": "em", "bold": "strong", "underline": "span", "strikethrough": "span"} {
+		doc, err := parseXML([]byte(`<emphasis role="`+role+`">Text</emphasis>`), maxDocumentTokens)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := docbookNode(doc, 0); got.name.Local != want || got.allText() != "Text" {
+			t.Fatalf("emphasis %q = %s %q", role, got.name.Local, got.allText())
+		}
+	}
+}
+
 func TestLongHeadingTargetsItsFirstPage(t *testing.T) {
 	entries := epubFixture()
 	replaceEPUB(entries, "OPS/text/z.xhtml", "First heading", strings.Repeat("Long heading ", 500))

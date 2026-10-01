@@ -31,8 +31,10 @@ func docbookNode(n *epubNode, level int) *epubNode {
 	case "literallayout", "programlisting":
 		out.name.Local = "pre"
 	case "emphasis":
-		out.name.Local = "em"
-		if n.attr("role") == "bold" {
+		switch n.attr("role") {
+		case "", "italic":
+			out.name.Local = "em"
+		case "bold":
 			out.name.Local = "strong"
 		}
 	case "itemizedlist":
