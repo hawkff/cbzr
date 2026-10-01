@@ -138,9 +138,10 @@ func pdfLinkTarget(href string) (target string, internal, ok bool) {
 		}
 		return "", false, false
 	}
-	if _, page, found := strings.Cut(href, "#"); found {
-		if _, err := strconv.Atoi(page); err == nil {
-			return "#" + page, true, true
+	// The document name precedes the page and may itself contain '#'.
+	if i := strings.LastIndexByte(href, '#'); i >= 0 {
+		if _, err := strconv.Atoi(href[i+1:]); err == nil {
+			return href[i:], true, true
 		}
 	}
 	return "", false, false

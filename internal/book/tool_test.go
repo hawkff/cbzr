@@ -301,6 +301,9 @@ func TestPDFTextLayerSelectionAndLinks(t *testing.T) {
 	if _, internal, ok := pdfLinkTarget("Tricky name.html#12"); !internal || !ok {
 		t.Fatal("page reference with spaces")
 	}
+	if target, internal, ok := pdfLinkTarget("issue#2.html#12"); target != "#12" || !internal || !ok {
+		t.Fatalf("page reference behind a '#' in the document name: %q", target)
+	}
 	if _, _, ok := pdfLinkTarget("file:///etc/passwd"); ok {
 		t.Fatal("file link survived")
 	}
