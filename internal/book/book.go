@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,7 +16,6 @@ import (
 
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
@@ -277,7 +277,8 @@ func (b *Book) lockPage(ctx context.Context, i int) (func(), error) {
 	}
 }
 
-// PageBytes returns a copy of the cached encoded bytes of page i (for HTTP serving).
+// PageBytes returns a copy of the cached encoded bytes of page i (for HTTP
+// serving). Converter pages sit in the cache as PPM and leave as PNG.
 func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
@@ -289,16 +290,30 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	}
 	cached, ok := b.encoded[i]
 	b.mu.Unlock()
-	if ok {
-		return bytes.Clone(cached.data), cached.mime, nil
+	data, mime := cached.data, cached.mime
+	if !ok {
+		unlock, err := b.lockPage(context.Background(), i)
+		if err != nil {
+			return nil, "", err
+		}
+		data, mime, err = b.pageBytes(context.Background(), i)
+		unlock()
+		if err != nil {
+			return nil, "", err
+		}
 	}
-	unlock, err := b.lockPage(context.Background(), i)
+	if mime != ppmMIME {
+		return bytes.Clone(data), mime, nil
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
+		return nil, "", fmt.Errorf("decode page %d: %w", i+1, err)
+	}
+	var out bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&out, img); err != nil {
 		return nil, "", err
 	}
-	defer unlock()
-	data, mime, err := b.pageBytes(context.Background(), i)
-	return bytes.Clone(data), mime, err
+	return out.Bytes(), "image/png", nil
 }
 
 // pageBytes requires lockPage. The cache holds at most eight pages and maxPageBytes.
