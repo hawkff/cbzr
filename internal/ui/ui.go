@@ -1366,7 +1366,7 @@ func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
 		m.find.running = false
 		return m, nil
 	}
-	for batch := 0; ; batch++ {
+	for batch := 1; ; batch++ { // pages handled in this update
 		if msg.err == nil {
 			key := p.book.Path + "\x00" + strconv.Itoa(msg.page)
 			m.ocrText[key] = msg.text
