@@ -70,34 +70,37 @@ func Highlight(src image.Image, rects []image.Rectangle) *image.RGBA {
 	return dst
 }
 
+// rotate turns src by q quarter turns clockwise. Pixels move through an
+// RGBA copy; At and Set would box a color per pixel.
 func rotate(src image.Image, q int) image.Image {
 	if q == 0 {
 		return src
 	}
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	var dst *image.RGBA
-	switch q {
-	case 1: // 90 cw
-		dst = image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(h-1-y, x, src.At(b.Min.X+x, b.Min.Y+y))
+	rgba, ok := src.(*image.RGBA)
+	if !ok {
+		rgba = image.NewRGBA(b)
+		draw.Draw(rgba, b, src, b.Min, draw.Src)
+	}
+	dw, dh := h, w
+	if q == 2 {
+		dw, dh = w, h
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	for y := 0; y < h; y++ {
+		row := rgba.Pix[rgba.PixOffset(b.Min.X, b.Min.Y+y):]
+		for x := 0; x < w; x++ {
+			var i int
+			switch q {
+			case 1: // 90 cw
+				i = dst.PixOffset(h-1-y, x)
+			case 2:
+				i = dst.PixOffset(w-1-x, h-1-y)
+			default: // 270 cw
+				i = dst.PixOffset(y, w-1-x)
 			}
-		}
-	case 2:
-		dst = image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(w-1-x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
-			}
-		}
-	default: // 270 cw
-		dst = image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.Set(y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
-			}
+			*(*[4]byte)(dst.Pix[i:]) = [4]byte(row[4*x:])
 		}
 	}
 	return dst
