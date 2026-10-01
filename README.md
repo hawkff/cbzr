@@ -8,8 +8,8 @@ terminal.
 - Go 1.26.4+ to build cbzr.
 - cgo and Xcode command-line tools for native macOS builds.
 - [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR search.
-- [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`; `pdftotext`
-  and `pdftohtml` for selecting text and links) for PDF,
+- [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`; `pdftohtml`
+  for outlines and links, `pdftotext` for text selection) for PDF,
   [DjVuLibre](https://djvu.sourceforge.net/) (`djvused`, `ddjvu`) for DJVU and
   `antiword` for DOC. Comics, EPUB, FB2 and DOCX need no external tools.
 
@@ -30,7 +30,7 @@ terminal.
   windows-1251 or koi8-r encodings.
 - cbzr keeps DOCX heading styles, bold and italic runs, list bullets, tables
   as one paragraph per cell, and embedded pictures. It reads DOC through
-  antiword as plain paragraphs.
+  antiword's DocBook output to keep headings.
 - cbzr renders PDF and DJVU pages on access with `pdftoppm` and `ddjvu`,
   scaled to fit 2000×2000 pixels. `-check` only counts their pages.
 - cbzr decodes JPEG, PNG, GIF, WebP, and BMP page images.
@@ -66,7 +66,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `w` | switch pane |
 | `v` | toggle split (keeps active pane) |
 | `s` | two-page spread: pages N and N+1 side by side (single pane) |
-| `tab` | chapter menu (EPUB, FB2 and DOCX headings, ComicInfo.xml bookmarks or archive folders) |
+| `tab` | chapter menu with document outlines, tables of contents or headings |
 | `b` | toggle bookmark on this page |
 | `F` | bookmarks menu (persisted in the user config dir) |
 | `/` in menus | fuzzy filter (subsequence match) |
@@ -91,6 +91,17 @@ caching results; `n`/`p` jump between hits and wrap. The final status counts
 pages it could not read, such as image pages without tesseract. Opening another book,
 toggling split with `v`, enabling split with `O`, closing a pane, or entering
 the native reader cancels the search.
+
+The chapter menu reads PDF and DJVU outlines, EPUB 3 navigation and EPUB 2
+NCX tables of contents, FB2 section titles, and DOC/DOCX headings. DOCX
+headings include inherited styles and paragraph outline levels. EPUBs without
+a usable table of contents fall back to headings and document titles. Comic
+archives use ComicInfo.xml bookmarks or top-level folders.
+
+Nested entries keep their order and indentation. Select an entry to jump to
+its page. PDF and DJVU outlines load in the background; missing tools or broken
+metadata produce an error when you open the menu. The reader does not infer
+chapter targets from a printed contents page.
 
 ## Mouse
 
