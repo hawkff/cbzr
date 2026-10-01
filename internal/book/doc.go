@@ -26,6 +26,8 @@ func docbookNode(n *epubNode, level int) *epubNode {
 		out.attrs = append(out.attrs, xml.Attr{Name: xml.Name{Local: "data-cbzr-depth"}, Value: strconv.Itoa(max(0, level-1))})
 	case "para", "simpara":
 		out.name.Local = "p"
+	case "beginpage":
+		out.name.Local = "br"
 	case "literallayout", "programlisting":
 		out.name.Local = "pre"
 	case "emphasis":

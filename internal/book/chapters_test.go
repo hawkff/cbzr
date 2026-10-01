@@ -250,13 +250,16 @@ func TestDOCXInheritedOutlineOverridesStyleName(t *testing.T) {
 }
 
 func TestDOCAndFB2NestedChapters(t *testing.T) {
-	doc, err := parseXML([]byte(`<book><title>Metadata title</title><bookinfo><title>Metadata title</title><author><surname>Example Author</surname></author></bookinfo><chapter><title>First</title><para>Text</para><sect1><title>Nested</title><para>More text</para></sect1></chapter></book>`), maxDocumentTokens)
+	doc, err := parseXML([]byte(`<book><title>Metadata title</title><bookinfo><title>Metadata title</title><author><surname>Example Author</surname></author></bookinfo><chapter><title>First</title><para>Text<beginpage/>After break</para><sect1><title>Nested</title><para>More text</para></sect1></chapter></book>`), maxDocumentTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
 	docBook, err := layoutBook(newBook("book.doc", true), &epubPackage{}, &epubNode{name: xhtml("body"), children: []*epubNode{docbookNode(doc, 0)}}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := docBook.PageText(0); !reflect.DeepEqual(got, []string{"First", "Text", "After break"}) {
+		t.Fatalf("DOC paragraph boundaries: %#v", got)
 	}
 	fb2, err := openFB2([]byte(`<FictionBook><body><section><title><p>First</p></title><p>Text</p><section><title><p>Nested</p></title><p>More text</p></section></section></body></FictionBook>`), "book.fb2")
 	if err != nil {
