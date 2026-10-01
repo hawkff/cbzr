@@ -226,8 +226,31 @@ func TestDOCXOutlineLevels(t *testing.T) {
 	}
 }
 
+func TestDOCXInheritedOutlineOverridesStyleName(t *testing.T) {
+	for _, tc := range []struct {
+		level, direct string
+		want          []Chapter
+	}{
+		{"4", "", []Chapter{{"Heading", 0, 4}}},
+		{"9", "", nil},
+		{"4", `<w:outlineLvl w:val="1"/>`, []Chapter{{"Heading", 0, 1}}},
+	} {
+		entries := docxFixture(t)
+		entries[1].data = []byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/>` + tc.direct + `</w:pPr><w:r><w:t>Heading</w:t></w:r></w:p></w:body></w:document>`)
+		entries[2].data = []byte(`<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Base"/></w:style><w:style w:styleId="Base"><w:pPr><w:outlineLvl w:val="` + tc.level + `"/></w:pPr></w:style></w:styles>`)
+		b, err := Open(writeEPUB(t, entries, ".docx"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.Close()
+		if got, err := b.Chapters(); err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("inherited level %s, direct %q: %#v, %v", tc.level, tc.direct, got, err)
+		}
+	}
+}
+
 func TestDOCAndFB2NestedChapters(t *testing.T) {
-	doc, err := parseXML([]byte(`<book><chapter><title>First</title><para>Text</para><sect1><title>Nested</title><para>More text</para></sect1></chapter></book>`), maxDocumentTokens)
+	doc, err := parseXML([]byte(`<book><title>Metadata title</title><bookinfo><title>Metadata title</title><author><surname>Example Author</surname></author></bookinfo><chapter><title>First</title><para>Text</para><sect1><title>Nested</title><para>More text</para></sect1></chapter></book>`), maxDocumentTokens)
 	if err != nil {
 		t.Fatal(err)
 	}

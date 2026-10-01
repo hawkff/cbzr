@@ -14,6 +14,8 @@ func docbookNode(n *epubNode, level int) *epubNode {
 		out.attrs = append(out.attrs, xml.Attr{Name: xml.Name{Local: "id"}, Value: id})
 	}
 	switch n.name.Local {
+	case "bookinfo", "articleinfo", "info":
+		return &epubNode{}
 	case "book", "article", "chapter", "preface", "appendix", "section", "sect1", "sect2", "sect3", "sect4", "sect5":
 		out.name.Local = "div"
 		if n.name.Local != "book" && n.name.Local != "article" {
@@ -50,6 +52,9 @@ func docbookNode(n *epubNode, level int) *epubNode {
 		out.attrs = append(out.attrs, xml.Attr{Name: xml.Name{Local: "href"}, Value: href})
 	}
 	for _, c := range n.children {
+		if (n.name.Local == "book" || n.name.Local == "article") && c.name.Local == "title" {
+			continue
+		}
 		out.children = append(out.children, docbookNode(c, level))
 	}
 	return out

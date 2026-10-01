@@ -133,6 +133,7 @@ func docxNode(n *epubNode, styles map[string]*epubNode, images, links map[string
 
 func docxHeading(props *epubNode, styles map[string]*epubNode) int {
 	id := props.child("pStyle").attr("val")
+	fallback := 0
 	for range maxEPUBXMLDepth {
 		if outline := props.child("outlineLvl"); outline.name.Local != "" {
 			level, err := strconv.Atoi(outline.attr("val"))
@@ -144,31 +145,26 @@ func docxHeading(props *epubNode, styles map[string]*epubNode) int {
 		style := styles[id]
 		name := id
 		if style != nil {
-			if style.child("pPr").child("outlineLvl").name.Local != "" {
-				props = style.child("pPr")
-				continue
-			}
 			if value := style.child("name").attr("val"); value != "" {
 				name = value
 			}
 		}
 		name = strings.ReplaceAll(strings.ToLower(name), " ", "")
-		if name == "title" {
-			return 1
-		}
-		if level, ok := strings.CutPrefix(name, "heading"); ok && len(level) == 1 && level[0] >= '1' && level[0] <= '9' {
-			return int(level[0] - '0')
+		if fallback == 0 {
+			if name == "title" {
+				fallback = 1
+			}
+			if level, ok := strings.CutPrefix(name, "heading"); ok && len(level) == 1 && level[0] >= '1' && level[0] <= '9' {
+				fallback = int(level[0] - '0')
+			}
 		}
 		if style == nil {
 			break
 		}
 		id = style.child("basedOn").attr("val")
 		props = style.child("pPr")
-		if id == "" {
-			break
-		}
 	}
-	return 0
+	return fallback
 }
 
 // docxOn reports whether a run property such as w:b or w:i is switched on.
