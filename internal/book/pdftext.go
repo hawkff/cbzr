@@ -13,7 +13,10 @@ import (
 // pdftotext is a paragraph; its lines carry a trailing space until the last.
 func pdfTextLayer(ctx context.Context, path string, page int) []textLine {
 	n := strconv.Itoa(page)
-	// pdftohtml parses the document again; let it run alongside pdftotext.
+	// pdftohtml parses the document again; let it run alongside pdftotext,
+	// and stop it when the words do not come.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	linkXML := make(chan []byte, 1)
 	go func() {
 		out, _ := runToolContext(ctx, "pdftohtml", "-xml", "-i", "-q", "-zoom", "1", "-f", n, "-l", n, "-stdout", path)
