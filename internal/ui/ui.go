@@ -188,8 +188,8 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 			}
 		}
 	}
-	if m.panes[1].book != nil {
-		m.split = true
+	if len(paths) > 1 {
+		m.split = true // a second book that failed to open still shows its error
 	} else {
 		m.webtoon = resumeWebtoon
 	}
@@ -1366,28 +1366,36 @@ func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
 		m.find.running = false
 		return m, nil
 	}
-	if msg.err == nil {
-		key := p.book.Path + "\x00" + strconv.Itoa(msg.page)
-		m.ocrText[key] = msg.text
-		if strings.Contains(strings.ToLower(msg.text), m.find.term) {
-			m.find.hits = append(m.find.hits, msg.page)
+	for batch := 1; ; batch++ { // pages handled in this update
+		if msg.err == nil {
+			key := p.book.Path + "\x00" + strconv.Itoa(msg.page)
+			m.ocrText[key] = msg.text
+			if strings.Contains(strings.ToLower(msg.text), m.find.term) {
+				m.find.hits = append(m.find.hits, msg.page)
+			}
+		} else {
+			m.find.skipped++
 		}
-	} else {
-		m.find.skipped++
+		m.find.scanned = msg.page + 1
+		if m.find.scanned >= m.find.total {
+			m.find.running = false
+			m.status = fmt.Sprintf("search done: %d hit(s) for %q · n/p to jump", len(m.find.hits), m.find.term)
+			if m.find.skipped > 0 {
+				m.status += fmt.Sprintf(" · %d page(s) not searched", m.find.skipped)
+			}
+			if len(m.find.hits) > 0 && m.active == m.find.pane {
+				return m.gotoHit(1)
+			}
+			return m, nil
+		}
+		// Book text needs no OCR: read it here in batches instead of one message
+		// per page, and yield between batches so input and progress stay live.
+		next := msg.page + 1
+		if batch == 64 || !p.book.IsTextPage(next) {
+			return m, m.ocrPage(msg.gen, next)
+		}
+		msg = ocrMsg{gen: msg.gen, page: next, book: p.book, text: strings.Join(p.book.PageText(next), "\n")}
 	}
-	m.find.scanned = msg.page + 1
-	if m.find.scanned >= m.find.total {
-		m.find.running = false
-		m.status = fmt.Sprintf("search done: %d hit(s) for %q · n/p to jump", len(m.find.hits), m.find.term)
-		if m.find.skipped > 0 {
-			m.status += fmt.Sprintf(" · %d page(s) not searched", m.find.skipped)
-		}
-		if len(m.find.hits) > 0 && m.active == m.find.pane {
-			return m.gotoHit(1)
-		}
-		return m, nil
-	}
-	return m, m.ocrPage(msg.gen, msg.page+1)
 }
 
 func (m Model) gotoHit(dir int) (tea.Model, tea.Cmd) {

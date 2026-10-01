@@ -123,7 +123,7 @@ func (p epubTextPage) open(ctx context.Context) (io.ReadCloser, error) {
 		}
 	}
 	var data bytes.Buffer
-	if err := png.Encode(contextWriter{ctx, &data}, canvas); err != nil {
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(contextWriter{ctx, &data}, canvas); err != nil {
 		return nil, err
 	}
 	return io.NopCloser(bytes.NewReader(data.Bytes())), nil

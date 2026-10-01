@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -416,6 +417,49 @@ func TestReplacedBookRejectsRenderAndOCR(t *testing.T) {
 	}
 }
 
+func TestTextSearchScansPagesInBatches(t *testing.T) {
+	// Each heading starts a page: 70 text pages, the image, then the same 70 again.
+	var doc strings.Builder
+	for i := range 70 {
+		doc.WriteString("<h1>Page " + strconv.Itoa(i) + "</h1>")
+		if i == 63 || i == 64 {
+			doc.WriteString("<p>needle</p>")
+		}
+	}
+	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, false, []string{testEPUBPath(t, doc.String())})
+	if m.panes[0].book == nil {
+		t.Fatalf("open EPUB: %v", m.panes[0].err)
+	}
+	defer m.panes[0].book.Close()
+	if n := m.panes[0].book.Len(); n != 141 {
+		t.Fatalf("pages = %d, want 141", n)
+	}
+	updated, cmd := m.startSearch("needle")
+	m = updated.(Model)
+	step := func(msg tea.Msg, scanned int, hits ...int) tea.Cmd {
+		t.Helper()
+		updated, cmd := m.Update(msg)
+		m = updated.(Model)
+		if m.find.scanned != scanned || !slices.Equal(m.find.hits, hits) {
+			t.Fatalf("scanned %d hits %v, want %d %v", m.find.scanned, m.find.hits, scanned, hits)
+		}
+		return cmd
+	}
+	// Page 0 arrives by message; the same update scans through page 63, then yields.
+	cmd = step(cmd(), 64, 63)
+	// Pages 64-69 scan in one update; the image page gets its own OCR command.
+	cmd = step(cmd(), 70, 63, 64)
+	if cmd == nil || !m.find.running {
+		t.Fatal("search stopped at the image page")
+	}
+	// The failed image page counts as skipped; the text after it scans in batches again.
+	cmd = step(ocrMsg{gen: m.find.gen, page: 70, book: m.panes[0].book, err: errors.New("no OCR")}, 134, 63, 64)
+	step(cmd(), 141, 63, 64, 134, 135)
+	if m.find.running || m.find.skipped != 1 || m.panes[0].page != 63 {
+		t.Fatalf("search end: running=%v skipped=%d page=%d", m.find.running, m.find.skipped, m.panes[0].page)
+	}
+}
+
 func TestPaneRemapRejectsOldRender(t *testing.T) {
 	m := testModel()
 	m.split = true
@@ -545,8 +589,14 @@ func TestOpenSplitRendersOriginalPaneAndCancelsSearch(t *testing.T) {
 	}
 }
 
-func testEPUBPath(t *testing.T) string {
+// testEPUBPath writes an EPUB whose spine holds a text document, an image
+// and the text document again. A body replaces the default text content.
+func testEPUBPath(t *testing.T, body ...string) string {
 	t.Helper()
+	xhtml := `<p><a href="https://example.com/read?utm_source=book&amp;id=7">Readable text.</a></p><p>` + strings.Repeat("scroll ", 30) + `</p>`
+	if len(body) > 0 {
+		xhtml = strings.Join(body, "")
+	}
 	path := filepath.Join(t.TempDir(), "text.epub")
 	f, err := os.Create(path)
 	if err != nil {
@@ -556,7 +606,7 @@ func testEPUBPath(t *testing.T) string {
 	for name, text := range map[string]string{
 		"META-INF/container.xml": `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
 		"book.opf":               `<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="text" href="text.xhtml" media-type="application/xhtml+xml"/><item id="image" href="page.png" media-type="image/png"/></manifest><spine><itemref idref="text"/><itemref idref="image"/><itemref idref="text"/></spine></package>`,
-		"text.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body><p><a href="https://example.com/read?utm_source=book&amp;id=7">Readable text.</a></p><p>` + strings.Repeat("scroll ", 30) + `</p></body></html>`,
+		"text.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body>` + xhtml + `</body></html>`,
 	} {
 		w, err := z.Create(name)
 		if err != nil {
