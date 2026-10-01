@@ -398,12 +398,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.webtoon && p.webScroll != 0 {
 			rerender = true
 		}
-		ready := frameReadyAfterPaint(p, msg.pane, msg.slot, msg.gen, rerender)
-		step := 1
-		if m.spreadActive() {
-			step = 2
+		cmds := []tea.Cmd{frameReadyAfterPaint(p, msg.pane, msg.slot, msg.gen, rerender)}
+		// Warm the whole next page or spread.
+		for pg := msg.page + m.slotCount(); pg < msg.page+2*m.slotCount(); pg++ {
+			cmds = append(cmds, m.prefetch(msg.pane, pg))
 		}
-		return m, tea.Batch(ready, m.prefetch(msg.pane, msg.page+step))
+		return m, tea.Batch(cmds...)
 
 	case frameReadyMsg:
 		p := m.panes[msg.pane]
@@ -845,6 +845,9 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if it.path != "" && (p.book == nil || p.book.Path != it.path) {
 			mm, cmd := m.openBook(m.active, it.path, nil)
 			mdl := mm.(Model)
+			if b := mdl.panes[mdl.active].book; b == nil || b.Path != it.path {
+				return mdl, cmd // the open failed; keep the current page
+			}
 			mdl2, cmd2 := mdl.goTo(mdl.active, it.page)
 			return mdl2, tea.Batch(cmd, cmd2)
 		}

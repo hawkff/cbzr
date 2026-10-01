@@ -22,12 +22,13 @@ func requireTools(t *testing.T, tools ...string) {
 	}
 }
 
-func TestPPMToPNG(t *testing.T) {
-	data, err := ppmToPNG([]byte("P6\n2 1\n255\n\xff\x00\x00\x00\x00\xff"))
-	if err != nil {
-		t.Fatal(err)
+func TestDecodePPM(t *testing.T) {
+	ppm := "P6\n2 1\n255\n\xff\x00\x00\x00\x00\xff"
+	config, format, err := image.DecodeConfig(strings.NewReader(ppm))
+	if err != nil || "image/"+format != ppmMIME || config.Width != 2 || config.Height != 1 {
+		t.Fatalf("config: %+v %s, %v", config, format, err)
 	}
-	img, err := png.Decode(bytes.NewReader(data))
+	img, _, err := image.Decode(strings.NewReader(ppm))
 	if err != nil || img.Bounds() != image.Rect(0, 0, 2, 1) {
 		t.Fatalf("decoded page: %v", err)
 	}
@@ -37,9 +38,17 @@ func TestPPMToPNG(t *testing.T) {
 		t.Fatal("pixel colors changed")
 	}
 	for _, bad := range []string{"P5\n2 1\n255\n\xff\xff", "P6\n2 1\n255\n\xff", "P6\n0 1\n255\n", "P6\n99999 99999\n255\n"} {
-		if _, err := ppmToPNG([]byte(bad)); err == nil {
+		if _, _, err := image.Decode(strings.NewReader(bad)); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+	b2 := &Book{pages: []entry{memEntry{"page.ppm", []byte(ppm)}}}
+	data, mime, err := b2.PageBytes(0)
+	if err != nil || mime != "image/png" {
+		t.Fatalf("served PPM as %s, %v", mime, err)
+	}
+	if served, err := png.Decode(bytes.NewReader(data)); err != nil || served.Bounds() != image.Rect(0, 0, 2, 1) {
+		t.Fatalf("served PNG: %v", err)
 	}
 }
 
@@ -291,6 +300,9 @@ func TestPDFTextLayerSelectionAndLinks(t *testing.T) {
 	}
 	if _, internal, ok := pdfLinkTarget("Tricky name.html#12"); !internal || !ok {
 		t.Fatal("page reference with spaces")
+	}
+	if target, internal, ok := pdfLinkTarget("issue#2.html#12"); target != "#12" || !internal || !ok {
+		t.Fatalf("page reference behind a '#' in the document name: %q", target)
 	}
 	if _, _, ok := pdfLinkTarget("file:///etc/passwd"); ok {
 		t.Fatal("file link survived")

@@ -13,6 +13,15 @@ import (
 // pdftotext is a paragraph; its lines carry a trailing space until the last.
 func pdfTextLayer(ctx context.Context, path string, page int) []textLine {
 	n := strconv.Itoa(page)
+	// pdftohtml parses the document again; let it run alongside pdftotext,
+	// and stop it when the words do not come.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	linkXML := make(chan []byte, 1)
+	go func() {
+		out, _ := runToolContext(ctx, "pdftohtml", "-xml", "-i", "-q", "-zoom", "1", "-f", n, "-l", n, "-stdout", path)
+		linkXML <- out
+	}()
 	out, err := runToolContext(ctx, "pdftotext", "-cropbox", "-bbox-layout", "-f", n, "-l", n, path, "-")
 	if err != nil {
 		return nil
@@ -27,7 +36,7 @@ func pdfTextLayer(ctx context.Context, path string, page int) []textLine {
 	if w <= 0 || h <= 0 {
 		return nil
 	}
-	links := pdfLinks(ctx, path, page, w, h)
+	links := pdfLinks(ctx, <-linkXML, path, page, w, h)
 	var lines []textLine
 	for _, flow := range pg.children {
 		for _, block := range flow.children {
@@ -132,23 +141,19 @@ func pdfLinkTarget(href string) (target string, internal, ok bool) {
 		}
 		return "", false, false
 	}
-	if _, page, found := strings.Cut(href, "#"); found {
-		if _, err := strconv.Atoi(page); err == nil {
-			return "#" + page, true, true
+	// The document name precedes the page and may itself contain '#'.
+	if i := strings.LastIndexByte(href, '#'); i >= 0 {
+		if _, err := strconv.Atoi(href[i+1:]); err == nil {
+			return href[i:], true, true
 		}
 	}
 	return "", false, false
 }
 
-// pdfLinks returns the link rectangles of a page as crop box fractions.
-// pdftohtml works in the media box, so pdfinfo supplies the offset when the
-// boxes differ in size.
-func pdfLinks(ctx context.Context, path string, page int, cropW, cropH float64) []pdfLink {
-	n := strconv.Itoa(page)
-	out, err := runToolContext(ctx, "pdftohtml", "-xml", "-i", "-q", "-zoom", "1", "-f", n, "-l", n, "-stdout", path)
-	if err != nil {
-		return nil
-	}
+// pdfLinks returns the link rectangles of a page as crop box fractions, read
+// from the pdftohtml XML of that page. pdftohtml works in the media box, so
+// pdfinfo supplies the offset when the boxes differ in size.
+func pdfLinks(ctx context.Context, out []byte, path string, page int, cropW, cropH float64) []pdfLink {
 	doc, err := parseXML(out, maxDocumentTokens)
 	if err != nil {
 		return nil
