@@ -94,7 +94,7 @@ func TestOpenEPUBTextSpineAndPages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(chapters, []Chapter{{"First heading", 0}, {"Notes", 1}}) {
+			if !reflect.DeepEqual(chapters, []Chapter{{"First heading", 0, 0}, {"Notes", 1, 0}}) {
 				t.Fatalf("chapters: %#v", chapters)
 			}
 			img, err := b.Page(0)
@@ -493,7 +493,7 @@ func TestEPUBHeadingTargetsFirstTextPage(t *testing.T) {
 			if chapters[0].Page != tc.page || !strings.HasPrefix(textEPUBPage(t, b, chapters[0].Page), "First heading") {
 				t.Fatalf("first heading target: %#v", chapters[0])
 			}
-			if chapters[1] != (Chapter{"Next heading", b.Len() - 2}) || chapters[2] != (Chapter{"Notes", b.Len() - 1}) {
+			if chapters[1] != (Chapter{"Next heading", b.Len() - 2, 1}) || chapters[2] != (Chapter{"Notes", b.Len() - 1, 0}) {
 				t.Fatalf("chapter target leaked: %#v", chapters)
 			}
 			imagePage := 0
@@ -527,7 +527,7 @@ func TestEPUBBodyStylesListsAndPre(t *testing.T) {
 		t.Fatal("page text lookup")
 	}
 	chapters, err := b.Chapters()
-	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"First heading", 0}, {"Sub", 0}, {"Notes", 1}}) {
+	if err != nil || !reflect.DeepEqual(chapters, []Chapter{{"First heading", 0, 0}, {"Sub", 0, 2}, {"Notes", 1, 0}}) {
 		t.Fatalf("chapters: %#v, %v", chapters, err)
 	}
 	bundled, err := epubBundledFonts()

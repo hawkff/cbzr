@@ -56,6 +56,11 @@ type pane struct {
 	loading bool
 	gen     int
 
+	chapters        []book.Chapter
+	chapterErr      error
+	chaptersReady   bool
+	chaptersLoading bool
+
 	rot       int // quarter turns cw
 	inverted  bool
 	zoom      float64
@@ -285,7 +290,7 @@ func (m Model) rememberPane(i int) {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.SetWindowTitle("cbzr")
+	return tea.Batch(tea.SetWindowTitle("cbzr"), m.loadChapters(m.panes[0]), m.loadChapters(m.panes[1]))
 }
 
 // ---- layout ----------------------------------------------------------------
@@ -446,6 +451,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ocrMsg:
 		return m.updateOCR(msg)
+
+	case chaptersMsg:
+		return m.updateChapters(msg)
 
 	case tea.MouseMsg:
 		return m.updateMouse(msg)
@@ -626,6 +634,7 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for _, p := range m.panes {
 			p.gen++
 			p.loading = false
+			p.chaptersLoading = false
 		}
 		m.nativeRequested = true
 		return m, tea.Quit
@@ -1121,7 +1130,7 @@ func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.syncServer()
-	return m, tea.Batch(prev, m.renderPane(i))
+	return m, tea.Batch(prev, m.renderPane(i), m.loadChapters(p))
 }
 
 func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
@@ -1209,27 +1218,33 @@ func (m Model) openChapters() (tea.Model, tea.Cmd) {
 	if p.book == nil {
 		return m, nil
 	}
-	chs, err := p.book.Chapters()
-	if err != nil {
-		m.zen = false
-		m.status = "chapters: " + err.Error()
-		return m, m.rerenderAll()
+	if !p.chaptersReady {
+		m.menu = menu{kind: menuChapters, title: "Chapters — " + safeText(p.book.Title), loading: true}
+		m.mode = modeMenu
+		return m, m.loadChapters(p)
 	}
-	if len(chs) == 0 {
+	if p.chapterErr != nil || len(p.chapters) == 0 {
+		m.mode = modeRead
 		m.status = "no chapter info in this book"
+		if p.chapterErr != nil {
+			m.status = "chapters: " + p.chapterErr.Error()
+		}
+		if m.zen {
+			m.zen = false
+			return m, m.rerenderAll()
+		}
 		return m, nil
 	}
-	items := make([]menuItem, len(chs))
-	cursor := 0
-	for i, c := range chs {
+	items := make([]menuItem, len(p.chapters))
+	for i, c := range p.chapters {
+		label := strings.Repeat("  ", max(0, min(c.Depth, 12))) + safeText(c.Title)
+		label = ansi.Truncate(label, 40, "…")
 		items[i] = menuItem{
-			label: fmt.Sprintf("%-40s p.%d", ansi.Truncate(safeText(c.Title), 40, "…"), c.Page+1),
+			label: label + strings.Repeat(" ", 40-ansi.StringWidth(label)) + fmt.Sprintf(" p.%d", c.Page+1),
 			page:  c.Page,
 		}
-		if c.Page <= p.page {
-			cursor = i
-		}
 	}
+	cursor := max(0, book.CurrentChapter(p.chapters, p.page))
 	m.menu = menu{kind: menuChapters, title: "Chapters — " + safeText(p.book.Title), all: items, cursor: cursor}
 	m.menu.applyFilter()
 	m.menu.move(0, m.menuHeight())
@@ -1713,14 +1728,9 @@ func (m Model) paneLines(i int) []string {
 			title = "🔖 " + title
 		}
 		var mods []string
-		if chapters, err := p.book.Chapters(); err == nil {
-			for j := len(chapters) - 1; j >= 0; j-- {
-				if chapters[j].Page <= p.page {
-					if name := strings.TrimSpace(safeText(chapters[j].Title)); name != "" {
-						mods = append(mods, name)
-					}
-					break
-				}
+		if current := book.CurrentChapter(p.chapters, p.page); current >= 0 {
+			if name := strings.TrimSpace(safeText(p.chapters[current].Title)); name != "" {
+				mods = append(mods, name)
 			}
 		}
 		if p.rot != 0 {

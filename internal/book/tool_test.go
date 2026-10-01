@@ -65,7 +65,7 @@ func TestOpenPDF(t *testing.T) {
 			}
 		}
 	})
-	requireTools(t, "pdfinfo", "pdftoppm")
+	requireTools(t, "pdfinfo", "pdftoppm", "pdftohtml")
 	for _, name := range []string{shifted, xmlShifted} {
 		b, err := Open(name)
 		if err != nil {

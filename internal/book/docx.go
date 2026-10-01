@@ -14,9 +14,8 @@ var docxDrop = map[string]bool{"instrText": true, "delText": true, "del": true, 
 
 var docxElements = map[string]string{"body": "body", "p": "p", "tbl": "div", "tr": "tr", "tc": "td", "br": "br", "cr": "br", "hyperlink": "a"}
 
-// openDOCX lays word/document.xml out through the XHTML layout. Heading
-// levels come from the style names, pictures and external links from the
-// relationships.
+// openDOCX lays word/document.xml out through the XHTML layout. Headings use
+// paragraph outline levels and inherited styles; relationships supply images and links.
 func openDOCX(arc archive, path string) (*Book, error) {
 	files := map[string]entry{}
 	for _, e := range arc.Entries() {
@@ -30,12 +29,12 @@ func openDOCX(arc archive, path string) (*Book, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
-	styles := map[string]string{} // style id -> built-in name
+	styles := map[string]*epubNode{}
 	if data, err := readEntry(files["word/styles.xml"], maxDocumentBytes); err == nil {
 		if sheet, err := parseXML(data, maxDocumentTokens); err == nil {
 			for _, s := range sheet.children {
 				if s.name.Local == "style" {
-					styles[s.attr("styleId")] = strings.ToLower(s.child("name").attr("val"))
+					styles[s.attr("styleId")] = s
 				}
 			}
 		}
@@ -75,7 +74,7 @@ func openDOCX(arc archive, path string) (*Book, error) {
 }
 
 // docxNode converts one WordprocessingML element to XHTML.
-func docxNode(n *epubNode, styles, images, links map[string]string, ancestors []*epubNode) *epubNode {
+func docxNode(n *epubNode, styles map[string]*epubNode, images, links map[string]string, ancestors []*epubNode) *epubNode {
 	if n.name.Local == "" {
 		return &epubNode{text: n.text}
 	}
@@ -108,14 +107,10 @@ func docxNode(n *epubNode, styles, images, links map[string]string, ancestors []
 		return imageNode(name)
 	case "p":
 		props := n.child("pPr")
-		style := styles[props.child("pStyle").attr("val")]
-		level, heading := strings.CutPrefix(style, "heading ")
-		switch {
-		case style == "title":
-			out.name.Local = "h1"
-		case heading && len(level) == 1 && level[0] >= '1' && level[0] <= '6':
-			out.name.Local = "h" + level
-		case props.child("numPr").name.Local != "":
+		if level := docxHeading(props, styles); level > 0 {
+			out.name.Local = "h" + strconv.Itoa(min(level, 6))
+			out.attrs = []xml.Attr{{Name: xml.Name{Local: "data-cbzr-depth"}, Value: strconv.Itoa(level - 1)}}
+		} else if props.child("numPr").name.Local != "" {
 			out.name.Local = "li"
 		}
 	}
@@ -134,6 +129,42 @@ func docxNode(n *epubNode, styles, images, links map[string]string, ancestors []
 		}
 	}
 	return out
+}
+
+func docxHeading(props *epubNode, styles map[string]*epubNode) int {
+	id := props.child("pStyle").attr("val")
+	fallback := 0
+	for range maxEPUBXMLDepth {
+		if outline := props.child("outlineLvl"); outline.name.Local != "" {
+			level, err := strconv.Atoi(outline.attr("val"))
+			if err == nil && level >= 0 && level < 9 {
+				return level + 1
+			}
+			return 0 // Level 9 is body text.
+		}
+		style := styles[id]
+		name := id
+		if style != nil {
+			if value := style.child("name").attr("val"); value != "" {
+				name = value
+			}
+		}
+		name = strings.ReplaceAll(strings.ToLower(name), " ", "")
+		if fallback == 0 {
+			if name == "title" {
+				fallback = 1
+			}
+			if level, ok := strings.CutPrefix(name, "heading"); ok && len(level) == 1 && level[0] >= '1' && level[0] <= '9' {
+				fallback = int(level[0] - '0')
+			}
+		}
+		if style == nil {
+			break
+		}
+		id = style.child("basedOn").attr("val")
+		props = style.child("pPr")
+	}
+	return fallback
 }
 
 // docxOn reports whether a run property such as w:b or w:i is switched on.

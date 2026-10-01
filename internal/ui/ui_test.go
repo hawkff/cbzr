@@ -61,6 +61,8 @@ func TestPaneHeaderShowsCurrentChapter(t *testing.T) {
 			m.width, m.spread = 200, tc.spread
 			p := m.panes[0]
 			p.book, p.page = b, tc.page
+			updated, _ := m.Update(m.loadChapters(p)())
+			m = updated.(Model)
 			for _, inverted := range []bool{false, true} {
 				p.inverted = inverted
 				header := m.paneLines(0)[0]
@@ -533,6 +535,7 @@ func TestZenErrorsScheduleReplacementFrame(t *testing.T) {
 				updated, cmd = m.updateMenuRename(tea.KeyMsg{Type: tea.KeyEnter})
 			case "chapters":
 				updated, cmd = m.openChapters()
+				updated, cmd = updated.(Model).Update(cmd())
 			}
 			m = updated.(Model)
 			if m.zen || m.mode != modeRead || m.status == "" || cmd == nil || !p.loading {

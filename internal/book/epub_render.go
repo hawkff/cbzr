@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/go-text/typesetting/font"
@@ -349,18 +350,11 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			}
 			links[i].start = 0
 		}
-		chapter := -1
 		if heading && pendingChapter >= 0 && strings.TrimSpace(paragraph.String()) != "" {
-			chapter, pendingChapter = pendingChapter, -1
+			paragraph.chapter = &l.book.chaps[pendingChapter]
+			pendingChapter = -1
 		}
-		if err := l.paragraph(paragraph, heading); err != nil {
-			return err
-		}
-		if chapter >= 0 {
-			// Layout may have moved the heading to a fresh page.
-			l.book.chaps[chapter].Page = len(l.book.pages)
-		}
-		return nil
+		return l.paragraph(paragraph, heading)
 	}
 	var walk func(*epubNode) error
 	walk = func(n *epubNode) error {
@@ -419,8 +413,12 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 				}
 			}
 			if title := n.allText(); title != "" {
+				depth := int(n.name.Local[1] - '1')
+				if value, err := strconv.Atoi(n.attr("data-cbzr-depth")); err == nil {
+					depth = max(0, min(value, maxEPUBXMLDepth))
+				}
 				pendingChapter = len(l.book.chaps)
-				l.book.chaps = append(l.book.chaps, Chapter{Title: title, Page: len(l.book.pages)})
+				l.book.chaps = append(l.book.chaps, Chapter{Title: title, Page: len(l.book.pages), Depth: depth})
 			}
 		}
 		if n.name.Local == "li" {
@@ -503,6 +501,9 @@ func (l *epubLayout) svg(e *epubPackage, name string, n *epubNode, resources map
 		if a.Name.Local == "transform" || a.Name.Local == "style" {
 			return fmt.Errorf("EPUB SVG transforms/styles are unsupported")
 		}
+	}
+	if id := n.attr("id"); id != "" {
+		l.pending = append(l.pending, epubAnchor{name + "#" + id, 0})
 	}
 	switch n.name.Local {
 	case "svg", "g":
