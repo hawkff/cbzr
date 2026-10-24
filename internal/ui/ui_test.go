@@ -516,8 +516,10 @@ func TestScreenshotNamesKeepEveryScript(t *testing.T) {
 	if got := sanitize("Война и мир: том 1 / 漫画?"); got != "Война_и_мир_том_1__漫画" {
 		t.Fatalf("sanitize = %q", got)
 	}
-	if got := sanitize(strings.Repeat("漫", 100)); got != strings.Repeat("漫", 60) {
-		t.Fatalf("long title kept %d runes", len([]rune(got)))
+	volume := strings.Repeat("漫", 70)
+	first, second := sanitize(volume+"1"), sanitize(volume+"2")
+	if first == second || len([]rune(first)) != 59 || !strings.HasPrefix(first, strings.Repeat("漫", 50)+"-") {
+		t.Fatalf("long titles: %q, %q", first, second)
 	}
 }
 

@@ -4,6 +4,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"math"
@@ -1352,8 +1353,11 @@ func sanitize(s string) string {
 		}
 		return -1
 	}, s))
-	// 60 runes of up to 4 bytes leave room in a 255-byte file name.
-	return string(name[:min(len(name), 60)])
+	if len(name) <= 60 {
+		return string(name) // up to 4 bytes a rune stays within a 255-byte file name
+	}
+	// Long titles keep a checksum of the rest, so volumes of a series stay apart.
+	return fmt.Sprintf("%s-%08x", string(name[:50]), crc32.ChecksumIEEE([]byte(string(name))))
 }
 
 // ---- OCR search -----------------------------------------------------------------
