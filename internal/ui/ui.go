@@ -1218,12 +1218,12 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.syncServer()
-	port, err := m.srv.Start()
+	base, err := m.srv.Start()
 	if err != nil {
 		m.status = err.Error()
 		return m, nil
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/b/%d/?p=%d", port, m.active, p.page)
+	url := fmt.Sprintf("%sb/%d/?p=%d", base, m.active, p.page)
 	if p.inverted {
 		url += "&invert=1"
 	}
