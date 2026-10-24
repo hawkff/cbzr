@@ -151,6 +151,81 @@ func TestOpenDJVU(t *testing.T) {
 	}
 }
 
+func TestSearchTextReadsPDFAndDJVULayers(t *testing.T) {
+	t.Run("pdf", func(t *testing.T) {
+		requireTools(t, "pdfinfo", "pdftotext")
+		b, err := Open(linkedPDF(t, "linked.pdf", false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.Close()
+		if !b.HasTextLayer() {
+			t.Fatal("PDF lost its text layer")
+		}
+		if first := strings.Fields(b.SearchText(0)); !reflect.DeepEqual(first, strings.Fields("Hello reader visit example next page")) {
+			t.Fatalf("first page: %q", first)
+		}
+		if second := strings.TrimSpace(b.SearchText(1)); second != "Second" || b.SearchText(2) != "" {
+			t.Fatalf("second page: %q", second)
+		}
+	})
+	t.Run("page count mismatch", func(t *testing.T) {
+		sh, err := exec.LookPath("sh")
+		if err != nil {
+			t.Skip("shell helper needs sh")
+		}
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "pdftotext"), []byte("#!"+sh+"\nprintf 'one\\f\\ftwo\\f'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		b := &Book{pages: []entry{toolPage{path: "synthetic.pdf", page: 1}, toolPage{path: "synthetic.pdf", page: 2}}}
+		defer b.Close()
+		if first, second := b.SearchText(0), b.SearchText(1); first != "" || second != "" {
+			t.Fatalf("misaligned layer used: %q, %q", first, second)
+		}
+	})
+	t.Run("djvu", func(t *testing.T) {
+		requireTools(t, "c44", "djvm", "djvused")
+		dir := t.TempDir()
+		source := filepath.Join(dir, "page.ppm")
+		if err := os.WriteFile(source, []byte("P6\n64 32\n255\n"+strings.Repeat("\xff\xff\xff", 64*32)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// The middle page has no text layer.
+		var pages []string
+		for i, text := range []string{`(page 0 0 64 32 (word 0 0 64 32 "Hello"))`, "", `(page 0 0 64 32 (word 0 0 64 32 "Привет"))`} {
+			page := filepath.Join(dir, strconv.Itoa(i)+".djvu")
+			if out, err := exec.Command("c44", source, page).CombinedOutput(); err != nil {
+				t.Fatalf("c44: %v: %s", err, out)
+			}
+			if text != "" {
+				layer := filepath.Join(dir, strconv.Itoa(i)+".txt")
+				if err := os.WriteFile(layer, []byte(text), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("djvused", "-e", "select 1; set-txt "+layer, "-s", page).CombinedOutput(); err != nil {
+					t.Fatalf("djvused: %v: %s", err, out)
+				}
+			}
+			pages = append(pages, page)
+		}
+		path := filepath.Join(dir, "scan.djvu")
+		if out, err := exec.Command("djvm", append([]string{"-c", path}, pages...)...).CombinedOutput(); err != nil {
+			t.Fatalf("djvm: %v: %s", err, out)
+		}
+		b, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.Close()
+		got := []string{strings.TrimSpace(b.SearchText(0)), strings.TrimSpace(b.SearchText(1)), strings.TrimSpace(b.SearchText(2))}
+		if !b.HasTextLayer() || !reflect.DeepEqual(got, []string{"Hello", "", "Привет"}) {
+			t.Fatalf("pages: %q", got)
+		}
+	})
+}
+
 func TestToolDiagnostics(t *testing.T) {
 	var diagnostics toolDiagnostics
 	payload := bytes.Repeat([]byte("x"), 3*maxToolDiagnostics)

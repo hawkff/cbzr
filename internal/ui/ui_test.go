@@ -1052,6 +1052,30 @@ func testPDFPath(t *testing.T) string {
 	return path
 }
 
+func TestSearchReadsPDFTextLayer(t *testing.T) {
+	path := testPDFPath(t)
+	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, false, []string{path})
+	if m.panes[0].book == nil {
+		t.Fatalf("open PDF: %v", m.panes[0].err)
+	}
+	defer m.panes[0].book.Close()
+	// The text layer makes search work without tesseract.
+	updated, _ := m.updateRead(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	if m.mode != modeSearch {
+		t.Fatalf("PDF search refused: %s", m.status)
+	}
+	updated, cmd := m.startSearch("HELLO  reader")
+	m = updated.(Model)
+	for m.find.running && cmd != nil {
+		updated, cmd = m.Update(cmd())
+		m = updated.(Model)
+	}
+	if m.find.running || !slices.Equal(m.find.hits, []int{0, 1}) || m.find.skipped != 0 {
+		t.Fatalf("hits %v, skipped %d, running %v", m.find.hits, m.find.skipped, m.find.running)
+	}
+}
+
 func TestMouseSelectsPDFTextInHalfblock(t *testing.T) {
 	path := testPDFPath(t)
 	m := New(render.NewHalfBlock(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, nil, false, []string{path})

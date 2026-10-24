@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
-	"image/png"
 	"io"
 	"math"
 	"strconv"
@@ -42,7 +41,7 @@ type epubLine struct {
 }
 type epubTextPage struct{ lines []epubLine }
 
-func (p epubTextPage) Name() string { return "epub-text.png" }
+func (p epubTextPage) Name() string { return "epub-text.ppm" }
 func (p epubTextPage) Open() (io.ReadCloser, error) {
 	return p.open(context.Background())
 }
@@ -123,11 +122,7 @@ func (p epubTextPage) open(ctx context.Context) (io.ReadCloser, error) {
 			return nil, err
 		}
 	}
-	var data bytes.Buffer
-	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(contextWriter{ctx, &data}, canvas); err != nil {
-		return nil, err
-	}
-	return io.NopCloser(bytes.NewReader(data.Bytes())), nil
+	return io.NopCloser(bytes.NewReader(encodePPM(canvas))), nil
 }
 
 // IsTextPage identifies EPUB text pages, which render as images or plain text.

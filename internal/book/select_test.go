@@ -1,6 +1,7 @@
 package book
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +102,72 @@ func TestCloseCancelsPDFWork(t *testing.T) {
 				t.Fatal("closed book cached or restarted canceled work")
 			}
 		})
+	}
+}
+
+func TestLeavingPageCancelsPDFText(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("shell helper needs sh")
+	}
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv("CBZR_TEST_CONVERTER_STARTED", started)
+	script := "#!" + sh + "\nprintf started > \"$CBZR_TEST_CONVERTER_STARTED\"\nexec sleep 5\n"
+	if err := os.WriteFile(filepath.Join(dir, "pdftotext"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	b := &Book{pages: []entry{toolPage{path: "synthetic.pdf", page: 1}}}
+	defer b.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		b.PrepareTextContext(ctx, 0)
+		close(done)
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("extraction did not start")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("leaving the page left the extraction running")
+	}
+	if b.TextReady(0) || len(b.layerLoading) != 0 {
+		t.Fatal("a canceled extraction cached its partial layer")
+	}
+}
+
+func TestPDFParagraphEndsAtLastVisibleLine(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("shell helpers need sh")
+	}
+	dir := t.TempDir()
+	for name, script := range map[string]string{
+		// The first block ends with a row that holds only a zero-width space.
+		"pdftotext": "printf '%s' '<html><body><doc><page width=\"200\" height=\"100\"><flow>" +
+			"<block><line><word xMin=\"10\" yMin=\"10\" xMax=\"80\" yMax=\"20\">First</word></line><line><word xMin=\"10\" yMin=\"30\" xMax=\"20\" yMax=\"40\">​</word></line></block>" +
+			"<block><line><word xMin=\"10\" yMin=\"50\" xMax=\"80\" yMax=\"60\">Second</word></line></block></flow></page></doc></body></html>'\n",
+		"pdftohtml": "printf '%s' '<pdf2xml><page width=\"200\" height=\"100\"/></pdf2xml>'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!"+sh+"\n"+script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	b := &Book{pages: []entry{toolPage{path: "synthetic.pdf", page: 1}}}
+	defer b.Close()
+	b.PrepareText(0)
+	if text, _ := b.Select(0, 0, 0, 1, 1); text != "First\nSecond" {
+		t.Fatalf("selection = %q", text)
 	}
 }
 

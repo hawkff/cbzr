@@ -56,6 +56,9 @@ type Book struct {
 	chaps    []Chapter
 	chapErr  error
 
+	searchOnce sync.Once
+	searchText []string // PDF or DJVU text layer by page
+
 	mu          sync.Mutex
 	cache       map[int]image.Image // small LRU-ish cache
 	order       []int
@@ -499,18 +502,6 @@ func (r contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.r.Read(p)
-}
-
-type contextWriter struct {
-	ctx context.Context
-	w   io.Writer
-}
-
-func (w contextWriter) Write(p []byte) (int, error) {
-	if err := w.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return w.w.Write(p)
 }
 
 func readEntry(e entry, limit int64) ([]byte, error) {

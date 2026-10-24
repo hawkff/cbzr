@@ -1,6 +1,7 @@
 package book
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 	"strings"
@@ -107,11 +108,15 @@ func (b *Book) TextReady(i int) bool {
 
 // PrepareText loads a bounded text layer cache. Concurrent preparations of
 // the same page share one extraction. Call it from a command for PDF pages.
-func (b *Book) PrepareText(i int) {
+func (b *Book) PrepareText(i int) { b.PrepareTextContext(context.Background(), i) }
+
+// PrepareTextContext stops a PDF extraction when ctx ends, for example when
+// the reader leaves the page, and caches nothing for it then.
+func (b *Book) PrepareTextContext(ctx context.Context, i int) {
 	if !b.Selectable(i) {
 		return
 	}
-	for {
+	for ctx.Err() == nil {
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
@@ -123,7 +128,10 @@ func (b *Book) PrepareText(i int) {
 		}
 		if done := b.layerLoading[i]; done != nil {
 			b.mu.Unlock()
-			<-done
+			select {
+			case <-done:
+			case <-ctx.Done():
+			}
 			continue
 		}
 		if b.layerLoading == nil {
@@ -131,9 +139,11 @@ func (b *Book) PrepareText(i int) {
 		}
 		done := make(chan struct{})
 		b.layerLoading[i] = done
-		ctx := b.contextLocked()
+		bookContext := b.contextLocked()
 		b.mu.Unlock()
 
+		ctx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(bookContext, cancel)
 		var lines []textLine
 		switch p := b.pages[i].(type) {
 		case epubTextPage:
@@ -141,9 +151,12 @@ func (b *Book) PrepareText(i int) {
 		case toolPage:
 			lines = pdfTextLayer(ctx, p.path, p.page)
 		}
+		canceled := ctx.Err() != nil
+		stop()
+		cancel()
 
 		b.mu.Lock()
-		if !b.closed {
+		if !b.closed && !canceled {
 			if b.layers == nil {
 				b.layers = make(map[int][]textLine)
 			}
