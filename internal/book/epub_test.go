@@ -229,7 +229,7 @@ func TestOpenEPUBRejectsInvalidContent(t *testing.T) {
 		{"missing id", "OPS/book.opf", `idref="first"`, `idref="absent"`, "missing manifest"},
 		{"duplicate id", "OPS/book.opf", `id="last"`, `id="first"`, "duplicate manifest"},
 		{"external manifest", "OPS/book.opf", `text/z.xhtml`, `https://example.org/ch.xhtml`, "local resource"},
-		{"missing resource", "OPS/book.opf", `text/z.xhtml`, `text/missing.xhtml`, "missing manifest resource"},
+		{"missing resource", "OPS/book.opf", `text/z.xhtml`, `text/missing.xhtml`, "missing resource"},
 		{"unsupported spine", "OPS/book.opf", `application/xhtml+xml`, `text/html`, "unsupported spine"},
 		{"empty spine item", "OPS/text/z.xhtml", `<h1>First heading</h1><p>Hello <em>reader</em> &amp; friends.</p><p>Second paragraph.</p>`, "", "no readable content"},
 		{"malformed XML", "OPS/text/z.xhtml", `</html>`, "", "XML"},
@@ -504,6 +504,28 @@ func TestEPUBHeadingTargetsFirstTextPage(t *testing.T) {
 				t.Fatal("heading image order changed")
 			}
 		})
+	}
+}
+
+func TestEPUBReadsFallbacksForUnsupportedMarkup(t *testing.T) {
+	entries := epubFixture()
+	replaceEPUB(entries, "OPS/book.opf", "</manifest>", `<item id="font" href="fonts/missing.otf" media-type="font/otf"/></manifest>`)
+	replaceEPUB(entries, "OPS/text/z.xhtml", "First heading", `Heading <epub:switch xmlns:epub="http://www.idpf.org/2007/ops"><epub:case required-namespace="urn:x">I</epub:case><epub:default>one</epub:default></epub:switch> <math xmlns="http://www.w3.org/1998/Math/MathML" alttext="x^2"><mi>x</mi><mn>2</mn></math>`)
+	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", `<p>Energy <math xmlns="http://www.w3.org/1998/Math/MathML" alttext="E=mc^2"><mi>E</mi></math> and <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>.</p>`+
+		`<video src="https://cdn.example/v.mp4" poster="https://cdn.example/p.png"><p>Video fallback.</p></video><embed src="https://example.org/x"/><iframe src="https://example.org/embed"></iframe>`+
+		`<epub:switch xmlns:epub="http://www.idpf.org/2007/ops"><epub:case required-namespace="urn:x"><p>Case text.</p><img src="https://example.org/unused.png"/></epub:case><epub:default><p>Default text.</p></epub:default></epub:switch>`+
+		`<p>Word<o:p xmlns:o="urn:schemas-microsoft-com:office:office"> markup<o:switch><o:case>.</o:case></o:switch></o:p></p>`)
+	b, err := Open(writeEPUB(t, entries, ".epub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	want := "Heading one x^2\nHello reader & friends.\nEnergy E=mc^2 and x.\nVideo fallback.\nDefault text.\nWord markup."
+	if got := textEPUBPage(t, b, 0); got != want {
+		t.Fatalf("text: %q", got)
+	}
+	if chapters, err := b.Chapters(); err != nil || len(chapters) == 0 || chapters[0].Title != "Heading one x^2" {
+		t.Fatalf("chapters: %#v, %v", chapters, err)
 	}
 }
 

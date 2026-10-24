@@ -1,6 +1,7 @@
 package book
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -55,9 +56,10 @@ type Book struct {
 	chaps    []Chapter
 	chapErr  error
 
-	mu    sync.Mutex
-	cache map[int]image.Image // small LRU-ish cache
-	order []int
+	mu          sync.Mutex
+	cache       map[int]image.Image // small LRU-ish cache
+	order       []int
+	cachePixels int
 
 	loading      map[int]chan struct{}
 	encoded      map[int]encodedPage
@@ -81,6 +83,7 @@ const (
 	cacheSize        = 8
 	maxPageBytes     = 64 << 20
 	maxPagePixels    = 32_000_000
+	maxCachePixels   = 2 * maxPagePixels
 	maxMetadataBytes = 1 << 20
 )
 
@@ -134,6 +137,9 @@ func Open(path string) (*Book, error) {
 	}
 	arc, err := openArchive(path)
 	if errors.Is(err, errNotArchive) {
+		if bytes.HasPrefix(head, []byte("PK\x03\x04")) {
+			return nil, fmt.Errorf("%s: %w", filepath.Base(path), zip.ErrFormat)
+		}
 		if looksLikeXML(head) {
 			b, xmlErr := openFB2File(path)
 			if xmlErr == nil || !bytes.Contains(head, []byte("%PDF-")) {
@@ -470,9 +476,12 @@ func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
 	if _, ok := b.cache[i]; !ok {
 		b.cache[i] = img
 		b.order = append(b.order, i)
-		for len(b.order) > cacheSize {
+		b.cachePixels += img.Bounds().Dx() * img.Bounds().Dy()
+		// Large scans take hundreds of megabytes each; keep their total bounded too.
+		for len(b.order) > cacheSize || b.cachePixels > maxCachePixels {
 			evict := b.order[0]
 			b.order = b.order[1:]
+			b.cachePixels -= b.cache[evict].Bounds().Dx() * b.cache[evict].Bounds().Dy()
 			delete(b.cache, evict)
 		}
 	}

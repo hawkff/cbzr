@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"os"
@@ -108,6 +111,73 @@ func TestOpenRejectsUnknownFormats(t *testing.T) {
 	}
 	if _, err := Open(filepath.Join(t.TempDir(), "absent.cbz")); err == nil || !strings.Contains(err.Error(), "absent.cbz") {
 		t.Fatalf("missing file: %v", err)
+	}
+	// A download cut short keeps the ZIP signature but loses the directory.
+	var archive bytes.Buffer
+	z := zip.NewWriter(&archive)
+	if w, err := z.Create("page.png"); err != nil {
+		t.Fatal(err)
+	} else if _, err := w.Write(epubImage(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "partial.cbz")
+	if err := os.WriteFile(path, archive.Bytes()[:archive.Len()/2], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); !errors.Is(err, zip.ErrFormat) || !strings.Contains(err.Error(), "partial.cbz") {
+		t.Fatalf("truncated ZIP: %v", err)
+	}
+}
+
+func TestOpenSolidRAR(t *testing.T) {
+	b, err := Open("testdata/solid.cbr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if b.Len() != 3 || !b.pages[1].(rarEntry).f.Solid {
+		t.Fatalf("%d pages; the fixture needs solid files after the first", b.Len())
+	}
+	// Each page is a 4-pixel-wide strip, 2+i rows high, in red, green and blue.
+	want := []color.RGBA{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}}
+	for _, i := range []int{2, 0, 1, 2, 1} { // backwards restarts the shared reader
+		data, err := readEntry(b.pages[i], maxPageBytes)
+		if err != nil {
+			t.Fatalf("page %d: %v", i, err)
+		}
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil || img.Bounds() != image.Rect(0, 0, 4, 2+i) || color.RGBAModel.Convert(img.At(1, 1)) != want[i] {
+			t.Fatalf("page %d decoded wrong: %v", i, err)
+		}
+	}
+	if _, err := b.Page(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEntry(b.pages[2], maxPageBytes); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("read after close: %v", err)
+	}
+}
+
+func TestPageCacheBoundsDecodedPixels(t *testing.T) {
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewGray(image.Rect(0, 0, 5000, 5000))); err != nil {
+		t.Fatal(err)
+	}
+	b := newBook("book", false)
+	for i := range 3 {
+		b.pages = append(b.pages, memEntry{fmt.Sprintf("%d.png", i), data.Bytes()})
+		if _, err := b.Page(i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(b.cache) != 2 || b.cache[0] != nil || b.cachePixels != 2*5000*5000 {
+		t.Fatalf("decoded cache kept %d pages, %d pixels", len(b.cache), b.cachePixels)
 	}
 }
 

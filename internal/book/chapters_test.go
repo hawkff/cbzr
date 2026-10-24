@@ -295,6 +295,11 @@ func TestComicChapterFallbacks(t *testing.T) {
 			t.Fatalf("chapters = %#v, %v", got, err)
 		}
 	}
+	// One wrapping folder still splits by its subfolders.
+	b := &Book{pages: []entry{memEntry{name: "Vol 1/Ch 1/1.png"}, memEntry{name: "Vol 1/Ch 2/2.png"}}}
+	if got, err := b.Chapters(); err != nil || !reflect.DeepEqual(got, []Chapter{{"Vol 1/Ch 1", 0, 0}, {"Vol 1/Ch 2", 1, 0}}) {
+		t.Fatalf("nested folders = %#v, %v", got, err)
+	}
 	chapters := []Chapter{{"Later", 5, 0}, {"Earlier", 1, 0}, {"Nested", 5, 1}, {"Appendix", 3, 0}}
 	for page, want := range map[int]int{0: -1, 1: 1, 4: 3, 5: 2, 99: 2} {
 		if got := CurrentChapter(chapters, page); got != want {
