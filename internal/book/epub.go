@@ -60,7 +60,7 @@ func (n *epubNode) allText() string {
 		if n.name.Space == "http://www.idpf.org/2007/ops" && n.name.Local == "case" {
 			return
 		}
-		if alt := n.attr("alttext"); n.name.Local == "math" && strings.TrimSpace(alt) != "" {
+		if alt := n.attr("alttext"); n.name.Space == "http://www.w3.org/1998/Math/MathML" && n.name.Local == "math" && strings.TrimSpace(alt) != "" {
 			b.WriteString(alt)
 			return
 		}

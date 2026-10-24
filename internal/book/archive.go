@@ -136,11 +136,16 @@ func (a *rarArchive) openSolid(e rarEntry) (io.ReadCloser, error) {
 		a.solid, a.next = rc, 0
 	}
 	for a.next <= e.index {
-		if a.closed.Load() {
-			a.closeSolid()
-			return nil, os.ErrClosed
+		var err error
+		if a.next > 0 {
+			// Decode the rest of the current file here, where Close can stop
+			// it; Next would decode it without checking.
+			_, err = io.Copy(io.Discard, solidReader{a})
 		}
-		h, err := a.solid.Next()
+		var h *rardecode.FileHeader
+		if err == nil {
+			h, err = a.solid.Next()
+		}
 		if err == nil && a.next == e.index && h.Name != e.f.Name {
 			err = fmt.Errorf("RAR entry %d is %q, want %q", e.index, h.Name, e.f.Name)
 		}
@@ -150,12 +155,22 @@ func (a *rarArchive) openSolid(e rarEntry) (io.ReadCloser, error) {
 		}
 		a.next++
 	}
-	data, err := readBounded(a.solid, maxPageBytes)
+	data, err := readBounded(solidReader{a}, maxPageBytes)
 	if err != nil {
 		a.closeSolid()
 		return nil, err
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// solidReader reads the current solid file until the archive closes.
+type solidReader struct{ a *rarArchive }
+
+func (r solidReader) Read(p []byte) (int, error) {
+	if r.a.closed.Load() {
+		return 0, os.ErrClosed
+	}
+	return r.a.solid.Read(p)
 }
 
 // closeSolid requires a.mu.

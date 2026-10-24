@@ -386,11 +386,13 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 		case "style", "embed":
 			return nil
 		case "switch":
-			// epub:switch falls back to its plain XHTML default branch.
-			return walk(n.child("default"))
+			if n.name.Space == "http://www.idpf.org/2007/ops" {
+				// epub:switch falls back to its plain XHTML default branch.
+				return walk(n.child("default"))
+			}
 		case "math":
 			// MathML reads as its alternative text when it has one, else as its text below.
-			if alt := n.attr("alttext"); strings.TrimSpace(alt) != "" {
+			if alt := n.attr("alttext"); n.name.Space == "http://www.w3.org/1998/Math/MathML" && strings.TrimSpace(alt) != "" {
 				return walk(&epubNode{text: alt})
 			}
 		case "i", "em", "cite", "dfn", "var":
@@ -548,6 +550,9 @@ func (l *epubLayout) svg(e *epubPackage, name string, n *epubNode, resources map
 }
 
 func validateEPUBReferences(name string, n *epubNode) error {
+	if n.name.Space == "http://www.idpf.org/2007/ops" && n.name.Local == "case" {
+		return nil // epub:switch lays out only its default branch
+	}
 	if n.name.Local == "script" || n.name.Local == "base" {
 		return fmt.Errorf("EPUB unsupported element: %s", n.name.Local)
 	}

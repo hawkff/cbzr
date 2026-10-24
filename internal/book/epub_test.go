@@ -513,8 +513,8 @@ func TestEPUBReadsFallbacksForUnsupportedMarkup(t *testing.T) {
 	replaceEPUB(entries, "OPS/text/z.xhtml", "First heading", `Heading <epub:switch xmlns:epub="http://www.idpf.org/2007/ops"><epub:case required-namespace="urn:x">I</epub:case><epub:default>one</epub:default></epub:switch> <math xmlns="http://www.w3.org/1998/Math/MathML" alttext="x^2"><mi>x</mi><mn>2</mn></math>`)
 	replaceEPUB(entries, "OPS/text/z.xhtml", "<p>Second paragraph.</p>", `<p>Energy <math xmlns="http://www.w3.org/1998/Math/MathML" alttext="E=mc^2"><mi>E</mi></math> and <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>.</p>`+
 		`<video src="https://cdn.example/v.mp4" poster="https://cdn.example/p.png"><p>Video fallback.</p></video><embed src="https://example.org/x"/><iframe src="https://example.org/embed"></iframe>`+
-		`<epub:switch xmlns:epub="http://www.idpf.org/2007/ops"><epub:case required-namespace="urn:x"><p>Case text.</p></epub:case><epub:default><p>Default text.</p></epub:default></epub:switch>`+
-		`<p>Word<o:p xmlns:o="urn:schemas-microsoft-com:office:office"> markup.</o:p></p>`)
+		`<epub:switch xmlns:epub="http://www.idpf.org/2007/ops"><epub:case required-namespace="urn:x"><p>Case text.</p><img src="https://example.org/unused.png"/></epub:case><epub:default><p>Default text.</p></epub:default></epub:switch>`+
+		`<p>Word<o:p xmlns:o="urn:schemas-microsoft-com:office:office"> markup<o:switch><o:case>.</o:case></o:switch></o:p></p>`)
 	b, err := Open(writeEPUB(t, entries, ".epub"))
 	if err != nil {
 		t.Fatal(err)
