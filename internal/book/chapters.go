@@ -3,6 +3,7 @@ package book
 import (
 	"encoding/xml"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -102,9 +103,10 @@ func (b *Book) folderChapters() []Chapter {
 	var chs []Chapter
 	cur := "\x00"
 	for i, pg := range b.pages {
-		d := ""
-		if k := strings.IndexByte(pg.Name(), '/'); k >= 0 {
-			d = pg.Name()[:k]
+		// The innermost folder names the chapter, so a single wrapping folder still splits.
+		d := path.Dir(pg.Name())
+		if d == "." {
+			d = ""
 		}
 		dirs[d] = true
 		if d != cur {
