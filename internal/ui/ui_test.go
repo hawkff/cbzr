@@ -382,13 +382,15 @@ func TestSpreadStopsOnLastPair(t *testing.T) {
 
 func TestNewFrameClearsLinkHover(t *testing.T) {
 	m := testModel()
-	m.hover = "https://example.com/"
 	p := m.panes[0]
 	p.gen = 1
 	cols, rows := m.imgBox(0)
-	updated, _ := m.Update(renderedMsg{target: p, gen: 1, page: 1, cols: cols, rows: rows})
-	if updated.(Model).hover != "" {
-		t.Fatal("the status bar kept the old page's link")
+	for slot := range 2 {
+		m.hover = "https://example.com/"
+		updated, _ := m.Update(renderedMsg{target: p, gen: 1, slot: slot, page: 1, cols: cols, rows: rows})
+		if updated.(Model).hover != "" {
+			t.Fatalf("slot %d kept the old page's link", slot)
+		}
 	}
 }
 

@@ -367,6 +367,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != p.gen || msg.target != p || msg.book != p.book {
 			return m, nil // stale
 		}
+		m.hover = "" // the link under the mouse may have moved with the page
 		if msg.slot == 1 {
 			p.res2 = render.Result{}
 			p.err2 = msg.err
@@ -396,7 +397,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transmit bytes are emitted inside View so that bubbletea's
 		// renderer stays the only writer to the terminal.
 		p.res = msg.res
-		m.hover = "" // the link under the mouse may have moved with the page
 		rerender := false
 		if cols, rows := m.imgBox(msg.pane); cols != msg.cols || rows != msg.rows {
 			rerender = true
