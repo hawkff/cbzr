@@ -56,6 +56,9 @@ type Book struct {
 	chaps    []Chapter
 	chapErr  error
 
+	searchOnce sync.Once
+	searchText []string // PDF or DJVU text layer by page
+
 	mu          sync.Mutex
 	cache       map[int]image.Image // small LRU-ish cache
 	order       []int

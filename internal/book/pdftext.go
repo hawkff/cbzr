@@ -40,6 +40,7 @@ func pdfTextLayer(ctx context.Context, path string, page int) []textLine {
 	var lines []textLine
 	for _, flow := range pg.children {
 		for _, block := range flow.children {
+			first := len(lines)
 			var rows []*epubNode
 			for _, row := range block.children {
 				if row.name.Local == "line" {
@@ -80,9 +81,60 @@ func pdfTextLayer(ctx context.Context, path string, page int) []textLine {
 				line.links = pdfLineLinks(line, links)
 				lines = append(lines, line)
 			}
+			// A last row without visible words must not join the paragraph to the next.
+			if last := len(lines) - 1; last >= first && !lines[last].end {
+				lines[last].end = true
+				lines[last].text = strings.TrimSuffix(lines[last].text, " ")
+			}
 		}
 	}
 	return lines
+}
+
+// HasTextLayer reports a PDF or DJVU book, whose pages may carry text.
+func (b *Book) HasTextLayer() bool {
+	if len(b.pages) == 0 {
+		return false
+	}
+	_, ok := b.pages[0].(toolPage)
+	return ok
+}
+
+// SearchText returns the text search reads on page i without OCR: the text
+// of a book page, or the PDF or DJVU text layer. The first call on a PDF or
+// DJVU book reads the layer of every page, so make it from a command.
+func (b *Book) SearchText(i int) string {
+	if b.IsTextPage(i) {
+		return strings.Join(b.PageText(i), "\n")
+	}
+	if i < 0 || i >= len(b.pages) || !b.HasTextLayer() {
+		return ""
+	}
+	b.searchOnce.Do(func() {
+		b.mu.Lock()
+		if b.closed {
+			b.mu.Unlock()
+			return
+		}
+		ctx := b.contextLocked()
+		b.mu.Unlock()
+		p := b.pages[0].(toolPage)
+		// Both tools end every page, an empty one too, with a form feed.
+		args := []string{"pdftotext", "-q", "-enc", "UTF-8", p.path, "-"}
+		if p.djvu {
+			args = []string{"djvused", "-u", "-e", "print-pure-txt", p.path}
+		}
+		if out, err := runToolContext(ctx, args[0], args[1:]...); err == nil {
+			// A stray form feed would move every later page; OCR is safer then.
+			if pages := strings.Split(string(out), "\f"); len(pages) == len(b.pages)+1 {
+				b.searchText = pages
+			}
+		}
+	})
+	if i < len(b.searchText) {
+		return b.searchText[i]
+	}
+	return ""
 }
 
 // pdfWordText drops the invisible characters PDFs hide in words.

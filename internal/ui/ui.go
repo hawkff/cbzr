@@ -58,6 +58,7 @@ type pane struct {
 	loading bool
 	gen     int
 
+	renderCtx    context.Context // ends when a newer render replaces the shown frame
 	cancelRender context.CancelFunc
 
 	chapters        []book.Chapter
@@ -427,7 +428,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prepareTextMsg:
 		for _, p := range m.panes[:m.paneCount()] {
 			if p == msg.target && p.book == msg.book && p.gen == msg.gen && msg.slot < m.slotCount() && p.page+msg.slot == msg.page && p.shown[msg.slot] == msg.page && !m.webtoon && p.rot == 0 {
-				return m, func() tea.Msg { msg.book.PrepareText(msg.page); return nil }
+				ctx := p.renderCtx
+				return m, func() tea.Msg { msg.book.PrepareTextContext(ctx, msg.page); return nil }
 			}
 		}
 		return m, nil
@@ -725,7 +727,7 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.book == nil {
 			return m, nil
 		}
-		if !ocr.Available() && !p.book.HasText() {
+		if !ocr.Available() && !p.book.HasText() && !p.book.HasTextLayer() {
 			m.status = "OCR needs tesseract on PATH"
 			return m, nil
 		}
@@ -1347,7 +1349,7 @@ func (m Model) startSearch(term string) (tea.Model, tea.Cmd) {
 	m.find = search{
 		gen:     m.find.gen + 1,
 		pane:    m.active,
-		term:    strings.ToLower(term),
+		term:    searchable(term),
 		total:   p.book.Len(),
 		running: true,
 	}
@@ -1364,19 +1366,22 @@ func (m Model) ocrPage(gen, page int) tea.Cmd {
 	}
 	b := p.book
 	if b.IsTextPage(page) {
-		text := strings.Join(b.PageText(page), "\n")
+		text := b.SearchText(page)
 		return func() tea.Msg { return ocrMsg{gen: gen, page: page, book: b, text: text} }
 	}
 	key := b.Path + "\x00" + strconv.Itoa(page)
 	if text, ok := m.ocrText[key]; ok {
 		return func() tea.Msg { return ocrMsg{gen: gen, page: page, book: b, text: text} }
 	}
-	if !ocr.Available() {
-		return func() tea.Msg {
+	canOCR := ocr.Available()
+	return func() tea.Msg {
+		// A PDF or DJVU text layer beats OCR; scanned pages have none.
+		if text := b.SearchText(page); strings.TrimSpace(text) != "" {
+			return ocrMsg{gen: gen, page: page, book: b, text: text}
+		}
+		if !canOCR {
 			return ocrMsg{gen: gen, page: page, book: b, err: fmt.Errorf("OCR needs tesseract on PATH")}
 		}
-	}
-	return func() tea.Msg {
 		img, err := b.Page(page)
 		if err != nil {
 			return ocrMsg{gen: gen, page: page, book: b, err: err}
@@ -1399,7 +1404,7 @@ func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			key := p.book.Path + "\x00" + strconv.Itoa(msg.page)
 			m.ocrText[key] = msg.text
-			if strings.Contains(strings.ToLower(msg.text), m.find.term) {
+			if strings.Contains(searchable(msg.text), m.find.term) {
 				m.find.hits = append(m.find.hits, msg.page)
 			}
 		} else {
@@ -1423,9 +1428,13 @@ func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
 		if batch == 64 || !p.book.IsTextPage(next) {
 			return m, m.ocrPage(msg.gen, next)
 		}
-		msg = ocrMsg{gen: msg.gen, page: next, book: p.book, text: strings.Join(p.book.PageText(next), "\n")}
+		msg = ocrMsg{gen: msg.gen, page: next, book: p.book, text: p.book.SearchText(next)}
 	}
 }
+
+// searchable folds case and joins words with single spaces, so a phrase also
+// matches across the line breaks of PDF text and OCR output.
+func searchable(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
 
 func (m Model) gotoHit(dir int) (tea.Model, tea.Cmd) {
 	if m.find.term == "" {
@@ -1513,7 +1522,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 		p.cancelRender()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	p.cancelRender = cancel
+	p.renderCtx, p.cancelRender = ctx, cancel
 	p.gen++
 	p.loading = true
 	gen, page, b := p.gen, p.page, p.book
