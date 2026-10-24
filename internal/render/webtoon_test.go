@@ -132,6 +132,16 @@ func TestComposeWebtoonAtCellResolutionKeepsLayout(t *testing.T) {
 	assertPixel(t, small, 12, 40, blue)
 	assertPixel(t, full, 100, 80, red)
 	assertPixel(t, full, 40, 80, color.RGBA{})
+	// Cells of 8.4x17 pixels make a frame 50.6 pixels tall; rounded up, it
+	// would fit its cells by height and leave a column blank.
+	frame, _, _, err := ComposeWebtoon(load, 2, 0, 0, 0, 200, 25, 0, 8.4, 17, 8.4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := (&HalfBlock{cw: 8.4, ch: 17}).Render(frame, 0, 200, 25, false)
+	if err != nil || res.Cols != 200 || res.Rows != 25 {
+		t.Fatalf("half-block grid %dx%d, %v", res.Cols, res.Rows, err)
+	}
 }
 
 func solidPage(width, height int, c color.Color) image.Image {

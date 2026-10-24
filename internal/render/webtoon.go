@@ -29,6 +29,11 @@ func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows flo
 	cw, ch = max(1, cw)/unit, max(1, ch)/unit
 	viewW := max(1, int(math.Round(float64(cols)*cw)))
 	viewH := max(1, int(math.Round(float64(rows)*ch)))
+	if unit > 1 {
+		// A coarse frame rounded up in height would fit its cells by height
+		// and lose a column; rounded down, the width decides.
+		viewH = max(1, int(float64(rows)*ch))
+	}
 
 	type pageImage struct {
 		img           image.Image
