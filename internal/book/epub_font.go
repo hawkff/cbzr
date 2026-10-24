@@ -56,13 +56,21 @@ func findEPUBFallbackFonts() ([]*font.Font, error) {
 			filepath.Join(root, "Fonts", "msyh.ttc"),
 		}
 	default:
+		// DejaVu Sans, Noto Sans Symbols 2 and Noto Sans CJK where the Debian,
+		// Ubuntu, Void, Fedora, Arch, Alpine and FreeBSD packages put them.
 		paths = []string{
 			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 			"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+			"/usr/share/fonts/TTF/DejaVuSans.ttf",
+			"/usr/share/fonts/dejavu/DejaVuSans.ttf",
 			"/usr/local/share/fonts/dejavu/DejaVuSans.ttf",
 			"/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+			"/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
+			"/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
 			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
 			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
 			"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
 		}
 	}
