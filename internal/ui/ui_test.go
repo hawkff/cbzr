@@ -362,6 +362,38 @@ func TestFailedSpreadClearsOldRightPage(t *testing.T) {
 	}
 }
 
+func TestSpreadStopsOnLastPair(t *testing.T) {
+	m := testModel()
+	m.spread = true
+	updated, _ := m.openBook(0, testBookPath(t), nil)
+	m = updated.(Model)
+	defer m.panes[0].book.Close()
+	p := m.panes[0]
+	p.res = render.Result{Rows: 1}
+	// Three pages pair as 1-2 and 3; from 2-3 the next spread is already on screen.
+	for _, tc := range []struct{ from, delta, want int }{{0, 1, 2}, {1, 1, 1}, {2, 1, 2}, {0, 5, 2}, {2, -1, 0}} {
+		p.page = tc.from
+		updated, _ := m.turn(0, tc.delta)
+		if got := updated.(Model).panes[0].page; got != tc.want {
+			t.Fatalf("turn %d from page %d = %d, want %d", tc.delta, tc.from, got, tc.want)
+		}
+	}
+}
+
+func TestNewFrameClearsLinkHover(t *testing.T) {
+	m := testModel()
+	p := m.panes[0]
+	p.gen = 1
+	cols, rows := m.imgBox(0)
+	for slot := range 2 {
+		m.hover = "https://example.com/"
+		updated, _ := m.Update(renderedMsg{target: p, gen: 1, slot: slot, page: 1, cols: cols, rows: rows})
+		if updated.(Model).hover != "" {
+			t.Fatalf("slot %d kept the old page's link", slot)
+		}
+	}
+}
+
 func TestZenSearchShowsInput(t *testing.T) {
 	m := testModel()
 	m.zen = true

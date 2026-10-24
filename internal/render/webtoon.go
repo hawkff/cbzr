@@ -14,8 +14,9 @@ type PageLoader func(int) (image.Image, error)
 // ComposeWebtoon builds a viewport from consecutive pages. Wide pages shrink
 // to the viewport; narrow pages keep their native size. Offset is the
 // fractional vertical position in page. scrollRows may contain fractional
-// terminal rows and may cross page boundaries.
-func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows float64, cols, rows, rot int, cw, ch float64) (*image.RGBA, int, float64, error) {
+// terminal rows and may cross page boundaries. Pages for which invert reports
+// true appear inverted; invert may be nil.
+func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows float64, cols, rows, rot int, cw, ch float64, invert func(int) bool) (*image.RGBA, int, float64, error) {
 	if pageCount < 1 {
 		return nil, 0, 0, fmt.Errorf("webtoon: no pages")
 	}
@@ -110,6 +111,10 @@ func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows flo
 		x := (viewW - current.width) / 2
 		dst := image.Rect(x, y-top, x+current.width, y-top+pageH)
 		xdraw.ApproxBiLinear.Scale(viewport, dst, current.img, current.img.Bounds(), xdraw.Src, nil)
+		if invert != nil && invert(page) {
+			// Inverting the drawn part beats copying a whole tall page each frame.
+			invertRect(viewport, dst)
+		}
 		y += pageH - top
 		if y >= viewH || page+1 >= pageCount {
 			break

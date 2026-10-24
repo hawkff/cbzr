@@ -287,7 +287,7 @@ func (r *reader) webtoonFrame(width, height int) (*image.RGBA, error) {
 	}
 	img, page, offset, err := render.ComposeWebtoon(
 		load, r.book.Len(), r.state.Page, r.state.Offset, scrollPixels,
-		width, height, 0, 1, 1,
+		width, height, 0, 1, 1, nil,
 	)
 	if err == nil {
 		if page == r.state.Page && math.Abs(offset-r.state.Offset) < 1e-9 {
@@ -564,11 +564,15 @@ func cbzr_go_native_turn(handle C.uintptr_t, delta C.int) {
 	r := readerFor(handle)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	step := 1
+	step, d := 1, int(delta)
 	if r.state.Spread {
 		step = 2
+		// Past the end, keep the pairing: stop on the last spread, not a lone last page.
+		if last := r.book.Len() - 1; r.state.Page+d*step > last {
+			d = (last - r.state.Page) / step
+		}
 	}
-	r.state.Page = min(r.book.Len()-1, max(0, r.state.Page+int(delta)*step))
+	r.state.Page = min(r.book.Len()-1, max(0, r.state.Page+d*step))
 	r.state.Offset = 0
 	r.pendingScroll, r.state.Scroll = 0, 0
 }

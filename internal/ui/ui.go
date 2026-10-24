@@ -367,6 +367,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != p.gen || msg.target != p || msg.book != p.book {
 			return m, nil // stale
 		}
+		m.hover = "" // the link under the mouse may have moved with the page
 		if msg.slot == 1 {
 			p.res2 = render.Result{}
 			p.err2 = msg.err
@@ -999,6 +1000,10 @@ func (m Model) turn(i, delta int) (tea.Model, tea.Cmd) {
 	step := 1
 	if m.spreadActive() {
 		step = 2 // one keypress flips a whole spread
+		// Past the end, keep the pairing: stop on the last spread, not a lone last page.
+		if last := p.book.Len() - 1; p.page+delta*step > last {
+			delta = (last - p.page) / step
+		}
 	}
 	return m.goTo(i, p.page+delta*step)
 }
@@ -1550,11 +1555,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			return nil, fmt.Errorf("text pages in webtoon need pixel rendering: %s", hint)
 		}
-		img, err := b.PageContext(ctx, pg)
-		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
-			img = render.Invert(img)
-		}
-		return img, err
+		return b.PageContext(ctx, pg)
 	}
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
@@ -1571,7 +1572,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			outPage, outOffset := pg, 0.0
 			if webtoon {
 				cw, ch := render.CellSize()
-				img, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch)
+				var invert func(int) bool
+				if inverted {
+					invert = b.CanInvertPage
+				}
+				img, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch, invert)
 			} else {
 				img, err = load(pg)
 				if err == nil {
@@ -1688,27 +1693,46 @@ func (m Model) View() string {
 		}
 	}
 	// Keep image uploads on a body row, separate from changing titles and
-	// clipboard writes. Retain them for repaints after menus and coalesced frames.
-	var oob strings.Builder
-	for i := 0; i < m.paneCount(); i++ {
-		oob.Write(m.panes[i].res.Transmit)
-		oob.Write(m.panes[i].res2.Transmit)
-	}
-	row := 0
+	// clipboard writes. Retain them for repaints after menus and coalesced
+	// frames. They can take megabytes and View runs on every message, so the
+	// frame copies them once.
+	row, clipRow := 0, 0
 	if !m.zen && len(lines) > 1 {
 		row = 1
 	}
-	lines[row] = oob.String() + lines[row]
-	clipRow := 0
 	if m.zen {
 		clipRow = len(lines) - 1
 	}
-	lines[clipRow] = string(m.clip) + lines[clipRow]
-	body := strings.Join(lines, "\n")
-	if m.zen && m.mode != modeSearch {
-		return body
+	status := ""
+	if !m.zen || m.mode == modeSearch {
+		status = "\n" + m.statusView()
 	}
-	return body + "\n" + m.statusView()
+	size := len(m.clip) + len(lines) + len(status)
+	for i := 0; i < m.paneCount(); i++ {
+		size += len(m.panes[i].res.Transmit) + len(m.panes[i].res2.Transmit)
+	}
+	for _, line := range lines {
+		size += len(line)
+	}
+	var frame strings.Builder
+	frame.Grow(size)
+	for r, line := range lines {
+		if r > 0 {
+			frame.WriteByte('\n')
+		}
+		if r == clipRow {
+			frame.Write(m.clip)
+		}
+		if r == row {
+			for i := 0; i < m.paneCount(); i++ {
+				frame.Write(m.panes[i].res.Transmit)
+				frame.Write(m.panes[i].res2.Transmit)
+			}
+		}
+		frame.WriteString(line)
+	}
+	frame.WriteString(status)
+	return frame.String()
 }
 
 // centerCells centers a block of lines, each exactly cols terminal cells
