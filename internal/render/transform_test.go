@@ -124,3 +124,31 @@ func TestHighlightTintsRectanglesOnly(t *testing.T) {
 		t.Fatalf("rectangle edges: %v %v", got.RGBAAt(2, 0), got.RGBAAt(3, 3))
 	}
 }
+
+func TestRotateReusesRecentTurns(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	first := rotate(src, 1)
+	if rotate(src, 1) != first || testing.AllocsPerRun(10, func() { rotate(src, 1) }) != 0 {
+		t.Fatal("turning the same page again copied it")
+	}
+	if rotate(src, 3) == first {
+		t.Fatal("another turn reused the wrong rotation")
+	}
+	// A pooled frame comes back with new pixels; its old turn must go.
+	frame := getRGBA(image.Rect(0, 0, 1, 1))
+	frame.Pix[0] = 1
+	if rotate(frame, 2).(*image.RGBA).Pix[0] != 1 {
+		t.Fatal("rotation lost the pixel")
+	}
+	Recycle(frame)
+	frame.Pix[0] = 9
+	if rotate(frame, 2).(*image.RGBA).Pix[0] != 9 {
+		t.Fatal("a recycled frame kept its old rotation")
+	}
+	turned := rotate(src, 2).(*image.RGBA)
+	Recycle(turned)
+	turned.Pix[0] = 77 // the pool's next user draws over it
+	if rotate(src, 2).(*image.RGBA).Pix[0] != 0 {
+		t.Fatal("a recycled rotation stayed in the cache")
+	}
+}

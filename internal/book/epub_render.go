@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/shaping"
@@ -26,9 +27,20 @@ const (
 )
 
 type epubRun struct {
-	shaping.Output
-	font *font.Font
-	x    fixed.Int26_6
+	font              *font.Font
+	x, advance, size  fixed.Int26_6
+	direction         di.Direction
+	ascent, descent   int           // pixels above and below the baseline
+	inkLeft, inkRight fixed.Int26_6 // glyph ink extent from x
+	glyphs            []epubGlyph
+}
+
+// epubGlyph keeps what painting and selection read of a shaped glyph in 24
+// bytes. shaping.Glyph takes 80, and a long novel lays out millions.
+type epubGlyph struct {
+	id                        font.GID
+	advance, xOffset, yOffset fixed.Int26_6
+	index, runes              int32 // rune range in the paragraph
 }
 
 type epubLine struct {
@@ -73,24 +85,37 @@ func (p epubTextPage) render(ctx context.Context) ([]byte, error) {
 				face = font.NewFace(run.font)
 				faces[run.font] = face
 			}
-			scale := float32(run.Size) / 64 / float32(face.Upem())
+			scale := float32(run.size) / 64 / float32(face.Upem())
 			x := float32(epubMargin) + float32(run.x)/64
-			for _, glyph := range run.Glyphs {
+			for _, glyph := range run.glyphs {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				if glyph.GlyphID != font.EmptyGlyph {
-					outline, ok := face.GlyphDataOutline(glyph.GlyphID)
-					ox := x + float32(glyph.XOffset)/64
-					oy := float32(line.y) - float32(glyph.YOffset)/64
+				if glyph.id != font.EmptyGlyph {
+					outline, ok := face.GlyphDataOutline(glyph.id)
+					if !ok || len(outline.Segments) == 0 {
+						x += float32(glyph.advance) / 64
+						continue
+					}
+					ox := x + float32(glyph.xOffset)/64
+					oy := float32(line.y) - float32(glyph.yOffset)/64
+					// The outline's points enclose its curves, so they bound the ink.
+					minX, minY := float32(math.Inf(1)), float32(math.Inf(1))
+					maxX, maxY := float32(math.Inf(-1)), float32(math.Inf(-1))
+					for i := range outline.Segments {
+						for _, p := range outline.Segments[i].ArgsSlice() {
+							minX, maxX = min(minX, p.X), max(maxX, p.X)
+							minY, maxY = min(minY, p.Y), max(maxY, p.Y)
+						}
+					}
 					bounds := image.Rect(
-						int(math.Floor(float64(ox+float32(glyph.XBearing)/64)))-1,
-						int(math.Floor(float64(oy-float32(glyph.YBearing)/64)))-1,
-						int(math.Ceil(float64(ox+float32(glyph.XBearing+glyph.Width)/64)))+1,
-						int(math.Ceil(float64(oy-float32(glyph.YBearing+glyph.Height)/64)))+1,
+						int(math.Floor(float64(ox+minX*scale)))-1,
+						int(math.Floor(float64(oy-maxY*scale)))-1,
+						int(math.Ceil(float64(ox+maxX*scale)))+1,
+						int(math.Ceil(float64(oy-minY*scale)))+1,
 					).Intersect(canvas.Bounds())
-					if !ok || len(outline.Segments) == 0 || bounds.Empty() {
-						x += float32(glyph.Advance) / 64
+					if bounds.Empty() {
+						x += float32(glyph.advance) / 64
 						continue
 					}
 					ox -= float32(bounds.Min.X)
@@ -117,7 +142,7 @@ func (p epubTextPage) render(ctx context.Context) ([]byte, error) {
 					raster.ClosePath()
 					raster.Draw(canvas, bounds, image.Black, image.Point{})
 				}
-				x += float32(glyph.Advance) / 64
+				x += float32(glyph.advance) / 64
 			}
 		}
 		for _, annotation := range line.annotations {

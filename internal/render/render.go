@@ -42,7 +42,10 @@ func getRGBA(r image.Rectangle) *image.RGBA {
 
 // Recycle hands back a frame from ComposeWebtoon, Invert or Highlight once
 // nothing refers to it any more.
-func Recycle(img *image.RGBA) { rgbaPool.Put(img) }
+func Recycle(img *image.RGBA) {
+	forgetRotations(img)
+	rgbaPool.Put(img)
+}
 
 // fitBox scales iw x ih pixels to fit maxCols x maxRows cells of cw x ch
 // pixels each, preserving aspect ratio. Returns the cell grid and pixel size.

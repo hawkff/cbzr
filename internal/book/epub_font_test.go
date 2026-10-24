@@ -15,7 +15,7 @@ import (
 )
 
 func TestEPUBFallbackShapedRaster(t *testing.T) {
-	fonts, err := parseEPUBFonts(goregular.TTF)
+	fonts, err := parseEPUBFonts(goregular.TTF, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,11 +32,6 @@ func TestEPUBFallbackShapedRaster(t *testing.T) {
 	runs := page.lines[0].runs
 	if len(runs) != 3 || runs[0].font != &primary || runs[1].font != fonts[0] || runs[2].font != &primary {
 		t.Fatalf("wrong fallback runs: %#v", runs)
-	}
-	for _, run := range runs {
-		if run.Face != nil {
-			t.Fatal("page retained mutable layout face")
-		}
 	}
 	before, _, err := l.book.PageBytes(0)
 	if err != nil {
@@ -120,6 +115,10 @@ func TestEPUBFontCollection(t *testing.T) {
 		}
 		if err != nil || len(fonts) != count {
 			t.Fatalf("font collection: %d fonts, %v", len(fonts), err)
+		}
+		// System collections only need their first face.
+		if first, err := parseEPUBFonts(data, 1); err != nil || len(first) != 1 {
+			t.Fatalf("first face of a collection: %d fonts, %v", len(first), err)
 		}
 		for _, f := range fonts {
 			l := &epubLayout{book: &Book{}, regular: []*font.Face{font.NewFace(f)}, y: epubMargin}

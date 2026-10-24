@@ -190,10 +190,10 @@ func (p epubTextPage) textLines() []textLine {
 		out := textLine{text: line.text, top: float64(top) / epubPageHeight, bottom: float64(bottom) / epubPageHeight, end: line.end}
 		for _, run := range line.runs {
 			x := fixed.I(epubMargin) + run.x
-			rtl := run.Direction.Progression() == di.TowardTopLeft
-			for _, glyph := range run.Glyphs {
-				out.boxes = append(out.boxes, textBox{epubFraction(x), epubFraction(x + glyph.Advance), glyph.TextIndex() - line.offset, glyph.RunesCount(), rtl})
-				x += glyph.Advance
+			rtl := run.direction.Progression() == di.TowardTopLeft
+			for _, glyph := range run.glyphs {
+				out.boxes = append(out.boxes, textBox{epubFraction(x), epubFraction(x + glyph.advance), int(glyph.index) - line.offset, int(glyph.runes), rtl})
+				x += glyph.advance
 			}
 		}
 		for _, link := range line.links {

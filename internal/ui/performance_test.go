@@ -34,7 +34,7 @@ func TestChromeChangesKeepImageTransmissionLineStable(t *testing.T) {
 			}
 			found := false
 			for i, line := range before {
-				if strings.Contains(line, "\x1b_G") {
+				if strings.Contains(line, uploadMarker) {
 					found = true
 					if line != after[i] {
 						t.Fatal("chrome update would replay the image upload")
@@ -45,11 +45,11 @@ func TestChromeChangesKeepImageTransmissionLineStable(t *testing.T) {
 				t.Fatal("frame lost its image transmission")
 			}
 			m.mode = modeHelp
-			if strings.Contains(m.View(), "\x1b_G") {
+			if strings.Contains(m.View(), uploadMarker) {
 				t.Fatal("help unexpectedly uploaded an image")
 			}
 			m.mode = modeRead
-			if !strings.Contains(m.View(), "\x1b_G") {
+			if !strings.Contains(written(t, m), "\x1b_Gpayload") {
 				t.Fatal("leaving help lost the image transmission")
 			}
 		})
