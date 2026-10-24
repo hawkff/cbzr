@@ -396,6 +396,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transmit bytes are emitted inside View so that bubbletea's
 		// renderer stays the only writer to the terminal.
 		p.res = msg.res
+		m.hover = "" // the link under the mouse may have moved with the page
 		rerender := false
 		if cols, rows := m.imgBox(msg.pane); cols != msg.cols || rows != msg.rows {
 			rerender = true
@@ -999,6 +1000,10 @@ func (m Model) turn(i, delta int) (tea.Model, tea.Cmd) {
 	step := 1
 	if m.spreadActive() {
 		step = 2 // one keypress flips a whole spread
+		// Past the end, keep the pairing: stop on the last spread, not a lone last page.
+		if last := p.book.Len() - 1; p.page+delta*step > last {
+			delta = (last - p.page) / step
+		}
 	}
 	return m.goTo(i, p.page+delta*step)
 }
