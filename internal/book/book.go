@@ -278,7 +278,7 @@ func (b *Book) lockPage(ctx context.Context, i int) (func(), error) {
 }
 
 // PageBytes returns a copy of the cached encoded bytes of page i (for HTTP
-// serving). Converter pages sit in the cache as PPM and leave as PNG.
+// serving). Converter pages switch from PPM to PNG on the first request.
 func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	if i < 0 || i >= len(b.pages) {
 		return nil, "", fmt.Errorf("page %d out of range", i)
@@ -290,30 +290,42 @@ func (b *Book) PageBytes(i int) ([]byte, string, error) {
 	}
 	cached, ok := b.encoded[i]
 	b.mu.Unlock()
-	data, mime := cached.data, cached.mime
-	if !ok {
-		unlock, err := b.lockPage(context.Background(), i)
-		if err != nil {
-			return nil, "", err
-		}
-		data, mime, err = b.pageBytes(context.Background(), i)
-		unlock()
-		if err != nil {
-			return nil, "", err
-		}
+	if ok && cached.mime != ppmMIME {
+		return bytes.Clone(cached.data), cached.mime, nil
+	}
+	unlock, err := b.lockPage(context.Background(), i)
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+	data, mime, err := b.pageBytes(context.Background(), i)
+	if err != nil {
+		return nil, "", err
 	}
 	if mime != ppmMIME {
 		return bytes.Clone(data), mime, nil
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, "", fmt.Errorf("decode page %d: %w", i+1, err)
+	b.mu.Lock()
+	img := b.cache[i]
+	b.mu.Unlock()
+	if img == nil {
+		img, _, err = image.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, "", fmt.Errorf("decode page %d: %w", i+1, err)
+		}
 	}
 	var out bytes.Buffer
 	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&out, img); err != nil {
 		return nil, "", err
 	}
-	return out.Bytes(), "image/png", nil
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, "", os.ErrClosed
+	}
+	b.cacheEncodedLocked(i, out.Bytes(), "image/png")
+	b.mu.Unlock()
+	return bytes.Clone(out.Bytes()), "image/png", nil
 }
 
 // pageBytes requires lockPage. The cache holds at most eight pages and maxPageBytes.
@@ -370,11 +382,22 @@ func (b *Book) pageBytes(ctx context.Context, i int) ([]byte, string, error) {
 		b.mu.Unlock()
 		return nil, "", os.ErrClosed
 	}
+	b.cacheEncodedLocked(i, data, mime)
+	b.mu.Unlock()
+	return data, mime, nil
+}
+
+// cacheEncodedLocked requires b.mu and replaces a page without duplicating its slot.
+func (b *Book) cacheEncodedLocked(i int, data []byte, mime string) {
 	if b.encoded == nil {
 		b.encoded = make(map[int]encodedPage)
 	}
+	if old, ok := b.encoded[i]; ok {
+		b.encodedBytes -= len(old.data)
+	} else {
+		b.encodedOrder = append(b.encodedOrder, i)
+	}
 	b.encoded[i] = encodedPage{data, mime}
-	b.encodedOrder = append(b.encodedOrder, i)
 	b.encodedBytes += len(data)
 	for len(b.encodedOrder) > cacheSize || b.encodedBytes > maxPageBytes {
 		evict := b.encodedOrder[0]
@@ -382,8 +405,6 @@ func (b *Book) pageBytes(ctx context.Context, i int) ([]byte, string, error) {
 		b.encodedBytes -= len(b.encoded[evict].data)
 		delete(b.encoded, evict)
 	}
-	b.mu.Unlock()
-	return data, mime, nil
 }
 
 // Page decodes page i, using a small in-memory cache.

@@ -13,10 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15]
-        cgo: ["1"]
-        include:
-          - os: macos-15
-            cgo: "0"
+        cgo: ["1", "0"]
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: ${{ matrix.cgo }}
@@ -61,7 +58,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Build portable macOS and Linux binaries
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.cgo == '0'
         shell: bash
         run: |
           version="dev+${GITHUB_SHA::12}"
@@ -74,8 +71,10 @@ jobs:
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$version" -o "dist/cbzr-$goos-$arch" .
           done
           test "$(dist/cbzr-linux-amd64 -version)" = "cbzr $version"
+          printf '%s' '<FictionBook><body><section><p>Portable reader.</p></section></body></FictionBook>' > "$RUNNER_TEMP/book.fb2"
+          dist/cbzr-linux-amd64 -check "$RUNNER_TEMP/book.fb2" internal/book/testdata/paragraphs.doc
       - name: Upload portable binaries
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.cgo == '0'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cbzr-portable
@@ -83,7 +82,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Compile declared BSD targets
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.cgo == '0'
         shell: bash
         run: |
           for target in freebsd netbsd openbsd dragonfly; do
