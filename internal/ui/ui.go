@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	tea "github.com/charmbracelet/bubbletea"
@@ -55,6 +57,8 @@ type pane struct {
 	err2    error
 	loading bool
 	gen     int
+
+	cancelRender context.CancelFunc
 
 	chapters        []book.Chapter
 	chapterErr      error
@@ -632,6 +636,9 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.cancelSearch()
 		for _, p := range m.panes {
+			if p.cancelRender != nil {
+				p.cancelRender()
+			}
 			p.gen++
 			p.loading = false
 			p.chaptersLoading = false
@@ -868,7 +875,8 @@ func (m Model) updateMenuFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		if len(m.menu.filter) > 0 {
-			m.menu.filter = m.menu.filter[:len(m.menu.filter)-1]
+			_, size := utf8.DecodeLastRuneInString(m.menu.filter)
+			m.menu.filter = m.menu.filter[:len(m.menu.filter)-size]
 			m.menu.applyFilter()
 		}
 		return m, nil
@@ -905,7 +913,8 @@ func (m Model) updateMenuRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		if len(m.input) > 0 {
-			m.input = m.input[:len(m.input)-1]
+			_, size := utf8.DecodeLastRuneInString(m.input)
+			m.input = m.input[:len(m.input)-size]
 		}
 		return m, nil
 	default:
@@ -946,7 +955,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return updated, tea.Batch(cmd, m.rerenderAll())
 	case "backspace":
 		if len(m.input) > 0 {
-			m.input = m.input[:len(m.input)-1]
+			_, size := utf8.DecodeLastRuneInString(m.input)
+			m.input = m.input[:len(m.input)-size]
 		}
 		return m, nil
 	default:
@@ -1116,9 +1126,7 @@ func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 		return m, prev
 	}
 	m.cancelSearch()
-	if p.book != nil {
-		p.book.Close() //nolint:errcheck
-	}
+	m.closeBook(i)
 	*p = *newPane()
 	p.book = b
 	if pos, ok := m.progress.Get(b.Path); ok {
@@ -1178,6 +1186,9 @@ func (m Model) closePane(i int) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) closeBook(i int) {
+	if m.panes[i].cancelRender != nil {
+		m.panes[i].cancelRender()
+	}
 	if m.panes[i].book != nil {
 		m.panes[i].book.Close() //nolint:errcheck
 	}
@@ -1498,6 +1509,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	if p.book == nil || m.width == 0 {
 		return nil
 	}
+	if p.cancelRender != nil {
+		p.cancelRender()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancelRender = cancel
 	p.gen++
 	p.loading = true
 	gen, page, b := p.gen, p.page, p.book
@@ -1525,7 +1541,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			return nil, fmt.Errorf("text pages in webtoon need pixel rendering: %s", hint)
 		}
-		img, err := b.Page(pg)
+		img, err := b.PageContext(ctx, pg)
 		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
 			img = render.Invert(img)
 		}
@@ -1534,6 +1550,9 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
 		return func() tea.Msg {
+			if err := ctx.Err(); err != nil {
+				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: pg, err: err}
+			}
 			if !webtoon && r.Name() == "halfblock" && b.IsTextPage(pg) {
 				res := textResult(b.PageText(pg), top, cols, rows)
 				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: pg, cols: cols, rows: rows, scroll: scroll, res: res}
@@ -1557,6 +1576,9 @@ func (m *Model) renderPane(i int) tea.Cmd {
 					}
 					img = render.Transform(img, rot, zoom, cx, cy)
 				}
+			}
+			if err == nil {
+				err = ctx.Err()
 			}
 			if err != nil {
 				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, err: err}
