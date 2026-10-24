@@ -2,10 +2,15 @@ package book
 
 import (
 	"archive/zip"
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	rardecode "github.com/nwaples/rardecode/v2"
 )
@@ -73,30 +78,103 @@ func (a *zipArchive) Close() error     { return a.rc.Close() }
 
 // -- rar ---------------------------------------------------------------------
 
-type rarArchive struct{ entries []entry }
+// rarArchive opens plain entries on their own. A solid entry depends on every
+// file before it, so solid entries share one sequential reader, which starts
+// over only for a file at or before its position.
+type rarArchive struct {
+	path    string
+	entries []entry
 
-type rarEntry struct{ f *rardecode.File }
+	mu     sync.Mutex
+	solid  *rardecode.ReadCloser
+	next   int         // archive index of the file the solid reader returns next
+	closed atomic.Bool // stops a long decode without waiting for it
+}
 
-func (e rarEntry) Name() string                 { return e.f.Name }
-func (e rarEntry) Open() (io.ReadCloser, error) { return e.f.Open() }
+type rarEntry struct {
+	a     *rarArchive
+	f     *rardecode.File
+	index int // position among all archive files, directories included
+}
+
+func (e rarEntry) Name() string { return e.f.Name }
+func (e rarEntry) Open() (io.ReadCloser, error) {
+	if !e.f.Solid {
+		return e.f.Open()
+	}
+	return e.a.openSolid(e)
+}
 
 func openRar(path string) (archive, error) {
 	files, err := rardecode.List(path)
 	if err != nil {
 		return nil, err
 	}
-	a := &rarArchive{}
-	for _, f := range files {
+	a := &rarArchive{path: path}
+	for i, f := range files {
 		if f.IsDir {
 			continue
 		}
-		a.entries = append(a.entries, rarEntry{f})
+		a.entries = append(a.entries, rarEntry{a, f, i})
 	}
 	return a, nil
 }
 
+// openSolid decodes up to the entry and returns its bytes.
+func (a *rarArchive) openSolid(e rarEntry) (io.ReadCloser, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed.Load() {
+		return nil, os.ErrClosed
+	}
+	if a.solid == nil || a.next > e.index {
+		a.closeSolid()
+		rc, err := rardecode.OpenReader(a.path)
+		if err != nil {
+			return nil, err
+		}
+		a.solid, a.next = rc, 0
+	}
+	for a.next <= e.index {
+		if a.closed.Load() {
+			a.closeSolid()
+			return nil, os.ErrClosed
+		}
+		h, err := a.solid.Next()
+		if err == nil && a.next == e.index && h.Name != e.f.Name {
+			err = fmt.Errorf("RAR entry %d is %q, want %q", e.index, h.Name, e.f.Name)
+		}
+		if err != nil {
+			a.closeSolid()
+			return nil, err
+		}
+		a.next++
+	}
+	data, err := readBounded(a.solid, maxPageBytes)
+	if err != nil {
+		a.closeSolid()
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// closeSolid requires a.mu.
+func (a *rarArchive) closeSolid() error {
+	if a.solid == nil {
+		return nil
+	}
+	err := a.solid.Close()
+	a.solid = nil
+	return err
+}
+
 func (a *rarArchive) Entries() []entry { return a.entries }
-func (a *rarArchive) Close() error     { return nil } // List readers open per entry
+func (a *rarArchive) Close() error {
+	a.closed.Store(true)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closeSolid()
+}
 
 // hiddenEntry reports junk entries: AppleDouble forks, hidden files,
 // and __MACOSX resource directories.
