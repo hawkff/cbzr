@@ -56,6 +56,14 @@ func (n *epubNode) allText() string {
 		if n.name.Space == "http://www.w3.org/1999/xhtml" && (n.name.Local == "rt" || n.name.Local == "rp") {
 			return
 		}
+		// Titles read like the page: epub:switch shows its default, MathML its alternative text.
+		if n.name.Space == "http://www.idpf.org/2007/ops" && n.name.Local == "case" {
+			return
+		}
+		if alt := n.attr("alttext"); n.name.Local == "math" && strings.TrimSpace(alt) != "" {
+			b.WriteString(alt)
+			return
+		}
 		b.WriteString(n.text)
 		for _, c := range n.children {
 			walk(c)
@@ -277,9 +285,7 @@ func openEPUB(arc archive, filename string) (*Book, error) {
 		if err != nil {
 			return nil, err
 		}
-		if e.files[name] == nil {
-			return nil, fmt.Errorf("EPUB missing manifest resource: %s", name)
-		}
+		// A missing file fails only when the book reads it; unused fonts often go missing.
 		if _, ok := manifest[id]; ok || resources[name] != "" {
 			return nil, fmt.Errorf("EPUB duplicate manifest id or resource: %s", id)
 		}

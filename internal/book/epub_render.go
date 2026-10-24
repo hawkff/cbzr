@@ -381,10 +381,18 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			return nil
 		}
 		switch n.name.Local {
-		case "script", "iframe", "object", "embed", "audio", "video", "math", "switch", "base":
+		case "script", "base":
 			return fmt.Errorf("unsupported EPUB element: %s", n.name.Local)
-		case "style":
+		case "style", "embed":
 			return nil
+		case "switch":
+			// epub:switch falls back to its plain XHTML default branch.
+			return walk(n.child("default"))
+		case "math":
+			// MathML reads as its alternative text when it has one, else as its text below.
+			if alt := n.attr("alttext"); strings.TrimSpace(alt) != "" {
+				return walk(&epubNode{text: alt})
+			}
 		case "i", "em", "cite", "dfn", "var":
 			italic++
 			defer func() { italic-- }()
@@ -396,7 +404,13 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 			defer func() { pre-- }()
 		}
 		if n.name.Space != "http://www.w3.org/1999/xhtml" && n.name.Local != "svg" {
-			return fmt.Errorf("EPUB unsupported element namespace: %s", n.name.Space)
+			// Foreign markup such as MathML or Word's o:p contributes only its text.
+			for _, c := range n.children {
+				if err := walk(c); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 		isHeading := len(n.name.Local) == 2 && n.name.Local[0] == 'h' && n.name.Local[1] >= '1' && n.name.Local[1] <= '6'
 		block := epubBlock(n.name.Local)
@@ -540,6 +554,12 @@ func validateEPUBReferences(name string, n *epubNode) error {
 	for _, a := range n.attrs {
 		if a.Name.Local == "href" && n.name.Local == "a" && n.name.Space == "http://www.w3.org/1999/xhtml" {
 			continue // Render link labels without navigation or resource loading.
+		}
+		switch n.name.Local {
+		case "audio", "video", "source", "track", "iframe", "embed":
+			if a.Name.Local == "src" || a.Name.Local == "poster" {
+				continue // Media shows its fallback text and never loads.
+			}
 		}
 		if a.Name.Local == "href" || a.Name.Local == "src" || a.Name.Local == "poster" {
 			if _, err := epubPath(name, a.Value); err != nil {
