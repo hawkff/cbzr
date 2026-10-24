@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
-	"image/png"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,9 +40,12 @@ func (k *Kitty) Name() string { return "kitty" }
 
 func (k *Kitty) SetCellSize(cw, ch float64) { k.mu.Lock(); k.cw, k.ch = cw, ch; k.mu.Unlock() }
 
-const chunkSize = 4096
+// chunkSize bytes of PNG fill one 4096-byte base64 chunk, the protocol's limit.
+const chunkSize = 3072
 
-func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result, error) {
+var pngBufs = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int, invert bool) (Result, error) {
 	k.mu.Lock()
 	cw, ch := k.cw, k.ch
 	k.mu.Unlock()
@@ -58,37 +60,45 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 	// as an off-center image, so leave none.
 	pw := max(1, int(float64(cols)*cw+0.5))
 	ph := max(1, int(float64(rows)*ch+0.5))
-	dst := image.NewRGBA(image.Rect(0, 0, pw, ph))
-	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
+	src, exact := img.(*image.RGBA)
+	if !exact || invert || src.Rect != image.Rect(0, 0, pw, ph) {
+		// Webtoon frames arrive at exactly this size and skip the copy.
+		src = getRGBA(image.Rect(0, 0, pw, ph))
+		defer Recycle(src)
+		xdraw.ApproxBiLinear.Scale(src, src.Bounds(), img, b, xdraw.Src, nil)
+		if invert {
+			invertRect(src, src.Bounds())
+		}
+	}
 
-	var pngBuf bytes.Buffer
-	enc := png.Encoder{CompressionLevel: png.BestSpeed}
-	if err := enc.Encode(&pngBuf, dst); err != nil {
+	pngBuf := pngBufs.Get().(*bytes.Buffer)
+	defer pngBufs.Put(pngBuf)
+	pngBuf.Reset()
+	if err := encodePNG(pngBuf, src); err != nil {
 		return Result{}, err
 	}
-	payload := base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+	data := pngBuf.Bytes()
 
 	var out bytes.Buffer
+	chunks := (len(data) + chunkSize - 1) / chunkSize
+	out.Grow(128 + chunks*(base64.StdEncoding.EncodedLen(chunkSize)+32))
 	// Kill the previous image and its virtual placement first. Reusing an
 	// id with different c/r otherwise leaves the old placement geometry
 	// live: placeholder cells outside it stay blank (half-drawn pages) and
 	// narrower grids show a slice of the old mapping.
-	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id), "")
-	first := true
-	for len(payload) > 0 {
-		n := min(chunkSize, len(payload))
-		chunk := payload[:n]
-		payload = payload[n:]
-		m := 0
-		if len(payload) > 0 {
-			m = 1
+	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id), nil)
+	for first := true; len(data) > 0; first = false {
+		n := min(chunkSize, len(data))
+		chunk := data[:n]
+		data = data[n:]
+		opts := "m=1"
+		if len(data) == 0 {
+			opts = "m=0"
 		}
 		if first {
-			k.apc(&out, fmt.Sprintf("a=T,q=2,f=100,t=d,i=%d,U=1,c=%d,r=%d,m=%d", id, cols, rows, m), chunk)
-			first = false
-		} else {
-			k.apc(&out, fmt.Sprintf("m=%d", m), chunk)
+			opts = fmt.Sprintf("a=T,q=2,f=100,t=d,i=%d,U=1,c=%d,r=%d,%s", id, cols, rows, opts)
 		}
+		k.apc(&out, opts, chunk)
 	}
 
 	// Placeholder grid: fg color carries the image id (24-bit), each cell is
@@ -98,6 +108,7 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 	var sb strings.Builder
 	for r := 0; r < rows; r++ {
 		sb.Reset()
+		sb.Grow(len(fg) + 8*cols + 5) // a 4-byte placeholder and two 2-byte diacritics per cell
 		sb.WriteString(fg)
 		for c := 0; c < cols; c++ {
 			sb.WriteRune(0x10EEEE)
@@ -113,19 +124,26 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 // Delete frees image id (and its placements) in the terminal.
 func (k *Kitty) Delete(id uint32) []byte {
 	var out bytes.Buffer
-	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id+k.base), "")
+	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id+k.base), nil)
 	return out.Bytes()
 }
 
-// apc writes one APC G sequence, wrapped for tmux passthrough when needed.
-func (k *Kitty) apc(w *bytes.Buffer, opts, payload string) {
-	seq := "\x1b_G" + opts
-	if payload != "" {
-		seq += ";" + payload
-	}
-	seq += "\x1b\\"
+// apc writes one APC G sequence with a base64 payload, wrapped for tmux
+// passthrough when needed. tmux wants every ESC doubled; base64 has none,
+// so only the framing changes.
+func (k *Kitty) apc(w *bytes.Buffer, opts string, payload []byte) {
 	if k.tmux {
-		seq = "\x1bPtmux;" + strings.ReplaceAll(seq, "\x1b", "\x1b\x1b") + "\x1b\\"
+		w.WriteString("\x1bPtmux;\x1b")
 	}
-	w.WriteString(seq)
+	w.WriteString("\x1b_G")
+	w.WriteString(opts)
+	if len(payload) > 0 {
+		w.WriteByte(';')
+		w.Write(base64.StdEncoding.AppendEncode(w.AvailableBuffer(), payload))
+	}
+	if k.tmux {
+		w.WriteString("\x1b\x1b\\\x1b\\")
+	} else {
+		w.WriteString("\x1b\\")
+	}
 }

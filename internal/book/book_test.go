@@ -381,7 +381,7 @@ func TestPageContextStopsArchiveReads(t *testing.T) {
 	if page.reads != 1 || !page.closed || len(b.loading) != 0 || len(b.cache) != 0 {
 		t.Fatal("canceled archive read continued or retained its load slot")
 	}
-	if _, err := (epubTextPage{}).open(ctx); err != context.Canceled {
+	if _, err := (epubTextPage{}).render(ctx); err != context.Canceled {
 		t.Fatalf("canceled text page: %v", err)
 	}
 }

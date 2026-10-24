@@ -156,15 +156,19 @@ func main() {
 
 // terminalOutput keeps the terminal from painting a partial frame. Embedding
 // the file preserves the descriptor Bubble Tea uses for resize detection.
+// The terminal holds the frame until the closing mode switch, so the frame
+// goes out in three writes instead of a megabyte-sized copy.
 type terminalOutput struct{ *os.File }
 
 func (w terminalOutput) Write(p []byte) (int, error) {
-	frame := make([]byte, 0, len(p)+len(ansi.SetModeSynchronizedOutput)+len(ansi.ResetModeSynchronizedOutput))
-	frame = append(frame, ansi.SetModeSynchronizedOutput...)
-	frame = append(frame, p...)
-	frame = append(frame, ansi.ResetModeSynchronizedOutput...)
-	n, err := w.File.Write(frame)
-	return max(0, min(len(p), n-len(ansi.SetModeSynchronizedOutput))), err
+	if _, err := w.File.WriteString(ansi.SetModeSynchronizedOutput); err != nil {
+		return 0, err
+	}
+	n, err := w.File.Write(p)
+	if _, endErr := w.File.WriteString(ansi.ResetModeSynchronizedOutput); err == nil {
+		err = endErr
+	}
+	return n, err
 }
 
 func checkBooks(paths []string, stdout, stderr io.Writer) int {

@@ -1,9 +1,8 @@
 package render
 
 import (
-	"fmt"
 	"image"
-	"strings"
+	"strconv"
 	"sync"
 
 	xdraw "golang.org/x/image/draw"
@@ -26,7 +25,7 @@ func (h *HalfBlock) Name() string { return "halfblock" }
 
 func (h *HalfBlock) SetCellSize(cw, ch float64) { h.mu.Lock(); h.cw, h.ch = cw, ch; h.mu.Unlock() }
 
-func (h *HalfBlock) Render(img image.Image, _ uint32, maxCols, maxRows int) (Result, error) {
+func (h *HalfBlock) Render(img image.Image, _ uint32, maxCols, maxRows int, invert bool) (Result, error) {
 	h.mu.Lock()
 	cw, ch := h.cw, h.ch
 	h.mu.Unlock()
@@ -34,23 +33,45 @@ func (h *HalfBlock) Render(img image.Image, _ uint32, maxCols, maxRows int) (Res
 	// Aspect: cell is cw x ch px, and a cell holds 1x2 "pixels".
 	cols, rows, _, _ := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, cw, ch)
 
-	dst := image.NewRGBA(image.Rect(0, 0, cols, rows*2))
+	dst := getRGBA(image.Rect(0, 0, cols, rows*2))
+	defer Recycle(dst)
 	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
+	if invert {
+		invertRect(dst, dst.Bounds())
+	}
 
 	lines := make([]string, rows)
-	var sb strings.Builder
+	var line []byte
 	for r := 0; r < rows; r++ {
-		sb.Reset()
+		top := dst.Pix[dst.PixOffset(0, 2*r):]
+		bottom := dst.Pix[dst.PixOffset(0, 2*r+1):]
+		line = line[:0]
+		var fg, bg [3]byte
 		for c := 0; c < cols; c++ {
-			tr, tg, tb, _ := dst.At(c, r*2).RGBA()
-			br, bg, bb, _ := dst.At(c, r*2+1).RGBA()
-			fmt.Fprintf(&sb, "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm\u2580",
-				tr>>8, tg>>8, tb>>8, br>>8, bg>>8, bb>>8)
+			// Colors repeat across flat areas; only changes need a sequence.
+			if t := [3]byte(top[4*c:]); c == 0 || t != fg {
+				line, fg = appendColor(line, "\x1b[38;2;", t), t
+			}
+			if u := [3]byte(bottom[4*c:]); c == 0 || u != bg {
+				line, bg = appendColor(line, "\x1b[48;2;", u), u
+			}
+			line = append(line, "\u2580"...)
 		}
-		sb.WriteString("\x1b[0m")
-		lines[r] = sb.String()
+		line = append(line, "\x1b[0m"...)
+		lines[r] = string(line)
 	}
 	return Result{Cols: cols, Rows: rows, Lines: lines}, nil
+}
+
+// appendColor appends a truecolor SGR sequence.
+func appendColor(b []byte, prefix string, c [3]byte) []byte {
+	b = append(b, prefix...)
+	b = strconv.AppendUint(b, uint64(c[0]), 10)
+	b = append(b, ';')
+	b = strconv.AppendUint(b, uint64(c[1]), 10)
+	b = append(b, ';')
+	b = strconv.AppendUint(b, uint64(c[2]), 10)
+	return append(b, 'm')
 }
 
 func (h *HalfBlock) Delete(uint32) []byte { return nil }

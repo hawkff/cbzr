@@ -10,6 +10,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
@@ -43,14 +44,23 @@ type epubTextPage struct{ lines []epubLine }
 
 func (p epubTextPage) Name() string { return "epub-text.ppm" }
 func (p epubTextPage) Open() (io.ReadCloser, error) {
-	return p.open(context.Background())
+	data, err := p.render(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-func (p epubTextPage) open(ctx context.Context) (io.ReadCloser, error) {
+// textCanvases reuses page-sized canvases; encodePPM copies the pixels out.
+var textCanvases = sync.Pool{New: func() any { return image.NewRGBA(image.Rect(0, 0, epubPageWidth, epubPageHeight)) }}
+
+// render draws the page as binary PPM.
+func (p epubTextPage) render(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	canvas := image.NewRGBA(image.Rect(0, 0, epubPageWidth, epubPageHeight))
+	canvas := textCanvases.Get().(*image.RGBA)
+	defer textCanvases.Put(canvas)
 	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
 	// Retain glyph IDs and positions from pagination; only raster caches are private.
 	faces := map[*font.Font]*font.Face{}
@@ -122,7 +132,7 @@ func (p epubTextPage) open(ctx context.Context) (io.ReadCloser, error) {
 			return nil, err
 		}
 	}
-	return io.NopCloser(bytes.NewReader(encodePPM(canvas))), nil
+	return encodePPM(canvas), nil
 }
 
 // IsTextPage identifies EPUB text pages, which render as images or plain text.

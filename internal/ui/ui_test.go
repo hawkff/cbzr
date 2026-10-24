@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"image"
+	"image/draw"
 	"image/png"
 	"os"
 	"os/exec"
@@ -868,8 +869,16 @@ type recordingRenderer struct {
 }
 
 func (r *recordingRenderer) Name() string { return "recording" }
-func (r *recordingRenderer) Render(img image.Image, _ uint32, _, _ int) (render.Result, error) {
-	r.images = append(r.images, img)
+
+// Render keeps a copy of what the reader would show: frames go back to a
+// pool afterwards, and inversion may be left to the renderer.
+func (r *recordingRenderer) Render(img image.Image, _ uint32, _, _ int, invert bool) (render.Result, error) {
+	shown := image.NewRGBA(img.Bounds())
+	draw.Draw(shown, shown.Bounds(), img, img.Bounds().Min, draw.Src)
+	if invert {
+		shown = render.Invert(shown)
+	}
+	r.images = append(r.images, shown)
 	return render.Result{}, nil
 }
 

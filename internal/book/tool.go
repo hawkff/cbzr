@@ -85,22 +85,22 @@ type toolPage struct {
 func (p toolPage) Name() string { return "page-" + strconv.Itoa(p.page) + ".ppm" }
 
 func (p toolPage) Open() (io.ReadCloser, error) {
-	return p.open(context.Background())
+	data, err := p.render(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-// open renders the page as binary PPM, which the registered decoder reads in
-// one pass; see ppm.go.
-func (p toolPage) open(ctx context.Context) (io.ReadCloser, error) {
+// render converts the page to binary PPM, which the registered decoder reads
+// in one pass; see ppm.go.
+func (p toolPage) render(ctx context.Context) ([]byte, error) {
 	n := strconv.Itoa(p.page)
 	args := []string{"pdftoppm", "-cropbox", "-scale-to", renderedPageSize, "-f", n, "-l", n, "-singlefile", p.path}
 	if p.djvu {
 		args = []string{"ddjvu", "-format=ppm", "-size=" + renderedPageSize + "x" + renderedPageSize, "-page=" + n, p.path}
 	}
-	data, err := runToolContext(ctx, args[0], args[1:]...)
-	if err != nil {
-		return nil, err
-	}
-	return io.NopCloser(bytes.NewReader(data)), nil
+	return runToolContext(ctx, args[0], args[1:]...)
 }
 
 // openRendered counts pages with poppler or djvulibre; pages render on access.
