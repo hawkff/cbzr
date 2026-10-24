@@ -158,11 +158,14 @@ have no text layer yet.
 ## Web reader
 
 `e` starts a server on `127.0.0.1` using a random port from 50000 through
-59999, then opens the current book and page. The URL carries a random token,
-so other users on the machine can't read your books, and its root lists the
-open books. The browser lists its keybindings in the header and opens with
-the active terminal pane's inversion setting. Over SSH, forward the port with
-`ssh -L PORT:127.0.0.1:PORT` and open the URL from the status bar.
+59999, then opens the current book and page through a one-time link. The
+link redirects to a URL with a random token, so the token never appears on
+a command line, and the token URL's root lists the open books. On Linux the
+server also turns away connections from other users. The browser lists its
+keybindings in the header and opens with the active terminal pane's
+inversion setting. Over SSH, forward the port with
+`ssh -L PORT:127.0.0.1:PORT` and open the link from the status bar; it works
+once, and `e` makes a new one.
 
 ## Yazi integration
 
