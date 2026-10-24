@@ -18,6 +18,9 @@ func Transform(img image.Image, rot int, zoom, cx, cy float64) image.Image {
 		return img
 	}
 	b := img.Bounds()
+	if b.Empty() {
+		return img
+	}
 	w, h := float64(b.Dx()), float64(b.Dy())
 	vw, vh := max(1, w/zoom), max(1, h/zoom)
 	x0 := clampf(cx*w-vw/2, 0, w-vw)

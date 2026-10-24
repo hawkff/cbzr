@@ -90,6 +90,20 @@ func TestZoomKeepsAtLeastOnePixel(t *testing.T) {
 	}
 }
 
+func TestZoomPreservesEmptyBounds(t *testing.T) {
+	for _, bounds := range []image.Rectangle{image.Rect(0, 0, 0, 4), image.Rect(0, 0, 4, 0), {}} {
+		src := image.NewRGBA(bounds)
+		for _, img := range []image.Image{src, struct{ image.Image }{src}} {
+			for rot := range 4 {
+				want := rotate(img, rot).Bounds()
+				if got := Transform(img, rot, 8, 0.5, 0.5).Bounds(); got != want {
+					t.Fatalf("rotation %d: empty bounds %v became %v", rot, want, got)
+				}
+			}
+		}
+	}
+}
+
 func TestHighlightTintsRectanglesOnly(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
