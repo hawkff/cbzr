@@ -14,6 +14,8 @@ type subImager interface {
 // rot is quarter turns (0-3), zoom >= 1, cx/cy locate the visible center
 // as fractions of the (rotated) image. The result may share pixels with src
 // or with other callers; treat it as read-only and never Recycle it.
+// Rotations are cached by image, so src must not change afterwards unless it
+// goes through Recycle.
 func Transform(img image.Image, rot int, zoom, cx, cy float64) image.Image {
 	img = rotate(img, rot&3)
 	if zoom <= 1.001 {
