@@ -209,7 +209,7 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 
 	fp := filepicker.New()
 	fp.AllowedTypes = []string{".cbz", ".zip", ".cbr", ".rar", ".epub", ".fb2", ".docx", ".doc", ".pdf", ".djvu", ".djv"}
-	// The picker matches suffixes by case; archives made on Windows often say .CBZ.
+	// The picker matches suffixes by case, and BOOK.CBZ is a common name.
 	for _, ext := range fp.AllowedTypes {
 		fp.AllowedTypes = append(fp.AllowedTypes, strings.ToUpper(ext))
 	}

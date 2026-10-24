@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"unicode"
@@ -43,17 +42,6 @@ func findEPUBFallbackFonts() ([]*font.Font, error) {
 			"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
 			"/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
 			"/System/Library/Fonts/STHeiti Light.ttc",
-		}
-	case "windows":
-		root := os.Getenv("WINDIR")
-		if root == "" {
-			root = `C:\Windows`
-		}
-		paths = []string{
-			filepath.Join(root, "Fonts", "seguisym.ttf"),
-			filepath.Join(root, "Fonts", "arial.ttf"),
-			filepath.Join(root, "Fonts", "msgothic.ttc"),
-			filepath.Join(root, "Fonts", "msyh.ttc"),
 		}
 	default:
 		// DejaVu Sans, Noto Sans Symbols 2 and Noto Sans CJK where the Debian,

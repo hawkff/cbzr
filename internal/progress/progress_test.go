@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -41,7 +40,7 @@ func TestStoreClampsAndSavesPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("progress file mode = %o, want owner-only", info.Mode().Perm())
 	}
 

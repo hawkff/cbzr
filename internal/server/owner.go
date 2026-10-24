@@ -12,10 +12,9 @@ import (
 // ownerOnly closes connections that other users open. The browser's launch
 // URL sits on its command line, where they can read it; on Linux the kernel
 // also names the owner of each loopback socket, so a stolen link is useless.
-// Root passes: it can read the books anyway, and WSL 2 forwards Windows
-// browsers through a relay that runs as root. A socket missing from the
-// tables, as under WSL 1 or in mirrored networking, keeps only the token and
-// one-time code as protection rather than locking out its owner.
+// Root passes: it can read the books anyway. A socket missing from the
+// tables, as without /proc/net, keeps only the token and one-time code as
+// protection rather than locking out its owner.
 type ownerOnly struct{ net.Listener }
 
 func (l ownerOnly) Accept() (net.Conn, error) {

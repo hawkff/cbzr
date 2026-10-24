@@ -84,10 +84,10 @@ jobs:
           path: dist/cbzr-*
           if-no-files-found: error
           retention-days: 7
-      - name: Compile declared BSD and Windows targets
+      - name: Compile declared BSD targets
         if: runner.os == 'Linux' && matrix.cgo == '0'
         shell: bash
         run: |
-          for target in freebsd netbsd openbsd dragonfly windows; do
+          for target in freebsd netbsd openbsd dragonfly; do
             CGO_ENABLED=0 GOOS="$target" GOARCH=amd64 go build ./...
           done
