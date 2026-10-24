@@ -9,7 +9,7 @@ terminal.
 - cgo and Xcode command-line tools for native macOS builds.
 - [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR search.
 - [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`; `pdftohtml`
-  for outlines and links, `pdftotext` for text selection) for PDF,
+  for outlines and links, `pdftotext` for search and text selection) for PDF,
   [DjVuLibre](https://djvu.sourceforge.net/) (`djvused`, `ddjvu`) for DJVU and
   `antiword` for DOC. Comics, EPUB, FB2 and DOCX need no external tools.
 
@@ -23,27 +23,36 @@ CGO_ENABLED=0 go build -o cbzr .
 ./cbzr book.cbz
 ```
 
-On Debian 13, install the optional document converters, OCR engine and browser
-launcher with:
+With a Go older than 1.26.4, such as Debian 13's, `GOTOOLCHAIN=auto` fetches
+the right toolchain. Debian sets it by default.
 
-```sh
-sudo apt install poppler-utils djvulibre-bin antiword tesseract-ocr xdg-utils
-```
+The optional packages add the document converters, OCR, a browser launcher,
+clipboard tools for terminals without OSC 52, and fonts for symbols and CJK
+text in books:
+
+| system | packages |
+|---|---|
+| Debian, Ubuntu | `poppler-utils djvulibre-bin antiword tesseract-ocr xdg-utils wl-clipboard xclip fonts-dejavu-core fonts-noto-core fonts-noto-cjk` |
+| Fedora | `poppler-utils djvulibre antiword tesseract tesseract-langpack-eng xdg-utils wl-clipboard xclip dejavu-sans-fonts google-noto-sans-symbols-2-fonts google-noto-sans-cjk-fonts` |
+| Arch | `poppler djvulibre antiword tesseract tesseract-data-eng xdg-utils wl-clipboard xclip ttf-dejavu noto-fonts noto-fonts-cjk` |
+| Alpine | `poppler-utils djvulibre antiword tesseract-ocr tesseract-ocr-data-eng xdg-utils wl-clipboard xclip font-dejavu font-noto-symbols font-noto-cjk` |
 
 Comics, EPUB, FB2 and DOCX work without these packages. Use Kitty or Ghostty
 for pixel graphics; other truecolor terminals use the half-block renderer.
 
 ## Formats
 
-- cbzr reads .cbz/.zip and .cbr/.rar archives. It detects every format from
-  the file signature, so a file still opens when its extension is wrong.
+- cbzr reads .cbz/.zip and .cbr/.rar archives, solid RAR included. It
+  detects every format from the file signature, so a file still opens when
+  its extension is wrong.
 - cbzr sorts comic archive images in natural order (`p2` before `p10`).
   For EPUBs, it follows the package spine and document order.
 - cbzr lays EPUB text out into fixed pages with the bundled Go fonts
   (regular, bold, italic) and system fonts for other scripts. Set
   `CBZR_EPUB_FALLBACK_FONT` to a TTF/OTF/TTC to replace the system font
   search. `h1` and `h2` headings start a page; lists, `pre` blocks and ruby
-  readings keep their shape.
+  readings keep their shape. MathML shows its alternative text, and audio,
+  video and embedded objects show their fallback text.
 - cbzr lays FB2 (plain or zipped) out the same way. The cover comes first,
   section titles start pages and fill the chapter menu, and note bodies
   follow the main text. cbzr keeps emphasis and embedded images and reads
@@ -66,7 +75,10 @@ cbzr probes the terminal and chooses a rendering backend.
   cbzr sends images out of band and prints placeholder cells for Bubble Tea
   to repaint and join split panes. This backend runs in Kitty and Ghostty.
   Under tmux 3.3 or newer, cbzr enables passthrough and detects the outer
-  terminal. It uses XTWINOPS replies for cell dimensions on Unix.
+  terminal. It uses XTWINOPS replies for cell dimensions on Unix. zellij,
+  GNU screen and terminals started from Kitty inherit Kitty's variables, and
+  cbzr ignores them there. Pass `-r kitty` when detection misses, for example
+  over SSH.
 - `halfblock`: uses U+2580 with truecolor foreground and background pixels.
   Each cell displays two vertical pixels. Use this backend in a 24-bit color
   terminal with U+2580 support. Text pages of EPUB, FB2, DOCX and DOC books
@@ -96,7 +108,7 @@ cbzr probes the terminal and chooses a rendering backend.
 | `i` | toggle inversion in the active pane (text pages in books; whole pages in comics, PDF and DJVU) |
 | `+` / `-` / `0` | zoom in / out / reset |
 | arrows | pan while zoomed; scroll a plain-text page that overflows the pane |
-| `/` | search: book text directly, OCR via tesseract for images (`CBZR_OCR_LANG`, default `eng`) |
+| `/` | search book text and PDF/DJVU text layers; OCR other pages with tesseract (`CBZR_OCR_LANG`, default `eng`) |
 | `n` / `p` | next / prev search hit |
 | `o` / `O` | open file in pane / in split |
 | `x` | close pane |
@@ -106,17 +118,18 @@ cbzr probes the terminal and chooses a rendering backend.
 | `q` / `ctrl+c` | clear saved positions for open books and quit |
 | `Q` | save positions for open books and quit |
 
-Search reads text pages directly and OCRs image pages in the background,
-caching results; `n`/`p` jump between hits and wrap. The final status counts
-pages it could not read, such as image pages without tesseract. Opening another book,
-toggling split with `v`, enabling split with `O`, closing a pane, or entering
-the native reader cancels the search.
+Search reads book text and the text layers of PDF and DJVU files, and OCRs
+the other pages in the background. It caches what it reads. Phrases match
+across line breaks, and `n`/`p` jump between hits and wrap. The final status
+counts pages it could not read, such as scans without tesseract. Opening
+another book, toggling split with `v`, enabling split with `O`, closing a
+pane, or entering the native reader cancels the search.
 
 The chapter menu reads PDF and DJVU outlines, EPUB 3 navigation and EPUB 2
 NCX tables of contents, FB2 section titles, and DOC/DOCX headings. DOCX
 headings include inherited styles and paragraph outline levels. EPUBs without
 a usable table of contents fall back to headings and document titles. Comic
-archives use ComicInfo.xml bookmarks or top-level folders.
+archives use ComicInfo.xml bookmarks or the folders that hold their pages.
 
 Nested entries keep their order and indentation. Select an entry to jump to
 its page. PDF and DJVU outlines load in the background; missing tools or broken
@@ -126,12 +139,14 @@ chapter targets from a printed contents page.
 ## Mouse
 
 On book and PDF pages, drag to select text. cbzr highlights the selection
-and copies it to the clipboard through OSC 52 when you release the button;
-inside tmux, `set-clipboard` must stay `on` or `external`. Click a link to
-follow it: web and mail links open in the browser, references inside the
-book turn to their page. Hovering over a link shows its destination in the
-status bar and right-click copies it. Opened and copied links lose tracking
-parameters such as `utm_*`, `fbclid`, `gclid` and `si`.
+and copies it to the clipboard when you release the button. Besides sending
+OSC 52, cbzr runs `tmux load-buffer -w` inside tmux and the first of
+`pbcopy`, `wl-copy` or `xclip` that works. That covers tmux's default
+`set-clipboard`, GNOME Terminal and macOS Terminal, which drop OSC 52. Click
+a link to follow it: web and mail links open in the browser, references
+inside the book turn to their page. Hovering over a link shows its
+destination in the status bar and right-click copies it. Opened and copied
+links lose tracking parameters such as `utm_*`, `fbclid`, `gclid` and `si`.
 
 Book pages carry their text from the layout. PDF pages get theirs from
 `pdftotext` and `pdftohtml` shortly after they appear, so scanned PDFs
@@ -143,9 +158,11 @@ have no text layer yet.
 ## Web reader
 
 `e` starts a server on `127.0.0.1` using a random port from 50000 through
-59999, then opens the current book and page. The browser lists its keybindings
-in the header. It opens with
-the active terminal pane's inversion setting. The index at `/` lists open books.
+59999, then opens the current book and page. The URL carries a random token,
+so other users on the machine can't read your books, and its root lists the
+open books. The browser lists its keybindings in the header and opens with
+the active terminal pane's inversion setting. Over SSH, forward the port with
+`ssh -L PORT:127.0.0.1:PORT` and open the URL from the status bar.
 
 ## Yazi integration
 
