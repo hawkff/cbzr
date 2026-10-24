@@ -388,7 +388,12 @@ func (l *epubLayout) document(e *epubPackage, name string, doc *epubNode, resour
 		case "switch":
 			if n.name.Space == "http://www.idpf.org/2007/ops" {
 				// epub:switch falls back to its plain XHTML default branch.
-				return walk(n.child("default"))
+				for _, c := range n.children {
+					if c.name.Space == n.name.Space && c.name.Local == "default" {
+						return walk(c)
+					}
+				}
+				return nil
 			}
 		case "math":
 			// MathML reads as its alternative text when it has one, else as its text below.
