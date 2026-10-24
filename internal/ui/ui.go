@@ -1219,17 +1219,15 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.syncServer()
-	base, err := m.srv.Start()
+	path := fmt.Sprintf("b/%d/?p=%d", m.active, p.page)
+	if p.inverted {
+		path += "&invert=1"
+	}
+	url, err := m.srv.Open(path)
 	if err != nil {
 		m.status = err.Error()
 		return m, nil
 	}
-	url := fmt.Sprintf("%sb/%d/?p=%d", base, m.active, p.page)
-	if p.inverted {
-		url += "&invert=1"
-	}
-	// shortcut: the token reaches the browser on its command line, which other
-	// local users can read with ps while it runs; a 0600 redirect file would hide it.
 	m.status = url
 	if m.openBrowser != nil {
 		if err := m.openBrowser(url); err != nil {

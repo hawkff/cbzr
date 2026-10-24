@@ -3,6 +3,7 @@ package server
 
 import (
 	crand "crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"html/template"
 	"math/rand"
@@ -23,6 +24,8 @@ type Server struct {
 	ln    net.Listener
 	port  int
 	token string // random path prefix that keeps other local users out
+	code  string // one-time code of the latest link from Open
+	next  string // where that link leads, below the token
 }
 
 // SetBooks replaces the served book list (index = pane order).
@@ -32,13 +35,26 @@ func (s *Server) SetBooks(bs []*book.Book) {
 	s.mu.Unlock()
 }
 
-// Start binds a random port in [50000, 60000), serves in the background and
-// returns the base URL. Idempotent: returns the same URL when already running.
-func (s *Server) Start() (string, error) {
+// Open starts the server on first use and returns a link to path, given
+// relative to the reader root. The link carries a one-time code instead of
+// the token: a browser keeps its launch URL on its command line, where other
+// local users can read it, and a spent code opens nothing. A newer link
+// replaces an unused older one.
+func (s *Server) Open(path string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.startLocked(); err != nil {
+		return "", err
+	}
+	s.code, s.next = crand.Text(), path
+	return fmt.Sprintf("http://127.0.0.1:%d/open/%s", s.port, s.code), nil
+}
+
+// startLocked binds a random port in [50000, 60000) and serves in the
+// background unless the server already runs. It requires s.mu.
+func (s *Server) startLocked() error {
 	if s.ln != nil {
-		return s.baseURL(), nil
+		return nil
 	}
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	var ln net.Listener
@@ -52,7 +68,7 @@ func (s *Server) Start() (string, error) {
 		}
 	}
 	if ln == nil {
-		return "", fmt.Errorf("no free port in 50000-59999: %w", err)
+		return fmt.Errorf("no free port in 50000-59999: %w", err)
 	}
 	s.ln = ln
 	s.token = crand.Text()
@@ -60,13 +76,8 @@ func (s *Server) Start() (string, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/b/", s.handleBook)
-	go http.Serve(ln, s.authorize(mux)) //nolint:errcheck // dies with the process
-	return s.baseURL(), nil
-}
-
-// baseURL requires s.mu.
-func (s *Server) baseURL() string {
-	return fmt.Sprintf("http://127.0.0.1:%d/%s/", s.port, s.token)
+	go http.Serve(ownerOnly{ln}, s.authorize(mux)) //nolint:errcheck // dies with the process
+	return nil
 }
 
 // Port returns the bound port, or 0 when not running.
@@ -99,8 +110,29 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			http.Error(w, "invalid host", http.StatusForbidden)
 			return
 		}
+		if code, ok := strings.CutPrefix(r.URL.Path, "/open/"); ok {
+			s.redeem(w, r, code)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// redeem trades the one-time code for a redirect below the token, which
+// stays out of every command line.
+func (s *Server) redeem(w http.ResponseWriter, r *http.Request, code string) {
+	s.mu.Lock()
+	valid := s.code != "" && subtle.ConstantTimeCompare([]byte(code), []byte(s.code)) == 1
+	if valid {
+		s.code = ""
+	}
+	target := "/" + s.token + "/" + s.next
+	s.mu.Unlock()
+	if !valid {
+		http.Error(w, "This link was used already. Press e in cbzr for a new one.", http.StatusGone)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func (s *Server) snapshot() []*book.Book {

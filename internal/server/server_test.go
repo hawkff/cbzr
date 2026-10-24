@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,25 +44,43 @@ func TestAuthorizeRejectsForeignHostAndToken(t *testing.T) {
 	}
 }
 
-func TestStartServesBooksUnderToken(t *testing.T) {
+func TestOpenLinksWorkOnce(t *testing.T) {
 	s := new(Server)
 	defer s.Close()
-	base, err := s.Start()
+	s.SetBooks([]*book.Book{pageBook(t, "page.png", nil)})
+	stale, err := s.Open("b/0/?p=0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := s.Start()
-	if err != nil || again != base || !strings.HasPrefix(base, "http://127.0.0.1:") || len(s.token) < 20 {
-		t.Fatalf("base URL %q, again %q, %v", base, again, err)
+	link, err := s.Open("b/0/?p=0&invert=1")
+	if err != nil || strings.Contains(link, s.token) || len(s.token) < 20 {
+		t.Fatalf("link %q leaks the token or failed: %v", link, err)
 	}
-	for url, want := range map[string]int{base: http.StatusOK, strings.TrimSuffix(base, s.token+"/"): http.StatusNotFound} {
-		res, err := http.Get(url)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	get := func(url string) *http.Response {
+		t.Helper()
+		res, err := client.Get(url)
 		if err != nil {
 			t.Fatal(err)
 		}
 		res.Body.Close()
-		if res.StatusCode != want {
-			t.Fatalf("%s: HTTP %d, want %d", url, res.StatusCode, want)
+		return res
+	}
+	if res := get(stale); res.StatusCode != http.StatusGone {
+		t.Fatalf("a replaced link: HTTP %d", res.StatusCode)
+	}
+	res := get(link)
+	target := res.Header.Get("Location")
+	if res.StatusCode != http.StatusSeeOther || target != "/"+s.token+"/b/0/?p=0&invert=1" {
+		t.Fatalf("first use: HTTP %d to %q", res.StatusCode, target)
+	}
+	if res := get(link); res.StatusCode != http.StatusGone {
+		t.Fatalf("second use: HTTP %d", res.StatusCode)
+	}
+	root, _, _ := strings.Cut(link, "/open/")
+	for path, want := range map[string]int{target: http.StatusOK, "/": http.StatusNotFound} {
+		if res := get(root + path); res.StatusCode != want {
+			t.Fatalf("%s: HTTP %d, want %d", path, res.StatusCode, want)
 		}
 	}
 }
@@ -206,5 +225,42 @@ events.click({clientX:0});assert.equal(filtered,false);load();
 	cmd.Stdin = strings.NewReader(script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("browser inversion: %v\n%s", err, output)
+	}
+}
+
+func TestOwnerOnlyKnowsLoopbackOwners(t *testing.T) {
+	// Two sockets of one loopback connection, as /proc/net/tcp lists them.
+	table := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:C350 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1000        0 101 1 0 20 4 30 10 -1
+   1: 0100007F:D431 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1001        0 102 1 0 20 4 30 10 -1`
+	if uid, ok := socketUID(table, "0100007F:D431", "0100007F:C350"); !ok || uid != 1001 {
+		t.Fatalf("client owner = %d, %v", uid, ok)
+	}
+	if _, ok := socketUID(table, "0100007F:D432", "0100007F:C350"); ok {
+		t.Fatal("found a socket that is not in the table")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ownerOnly{ln}.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	c := <-accepted
+	defer c.Close()
+	if _, err := os.Stat("/proc/net/tcp"); err == nil {
+		if uid, ok := peerUID(c); !ok || uid != os.Getuid() {
+			t.Fatalf("own connection owner = %d, %v", uid, ok)
+		}
 	}
 }
