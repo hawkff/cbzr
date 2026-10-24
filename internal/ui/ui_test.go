@@ -512,6 +512,17 @@ func TestPaneRemapRejectsOldRender(t *testing.T) {
 	}
 }
 
+func TestScreenshotNamesKeepEveryScript(t *testing.T) {
+	if got := sanitize("Война и мир: том 1 / 漫画?"); got != "Война_и_мир_том_1__漫画" {
+		t.Fatalf("sanitize = %q", got)
+	}
+	volume := strings.Repeat("漫", 70)
+	first, second := sanitize(volume+"1"), sanitize(volume+"2")
+	if first == second || len([]rune(first)) != 59 || !strings.HasPrefix(first, strings.Repeat("漫", 50)+"-") {
+		t.Fatalf("long titles: %q, %q", first, second)
+	}
+}
+
 func TestSafeTextRemovesArchiveControls(t *testing.T) {
 	if got := safeText("title\x1b]2;spoof\a\x1b[31mred\x1b[0m\n\t"); got != "titlered" {
 		t.Fatalf("safe text = %q", got)

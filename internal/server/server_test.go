@@ -17,19 +17,51 @@ import (
 	"cbzr/internal/book"
 )
 
-func TestAuthorizeRejectsForeignHost(t *testing.T) {
-	s := &Server{port: 54321}
-	handler := s.authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	for _, host := range []string{"attacker.example:54321", "127.0.0.1:54322", "127.0.0.1:54321"} {
-		req := httptest.NewRequest("GET", "http://"+host+"/", nil)
-		res := httptest.NewRecorder()
-		handler.ServeHTTP(res, req)
-		want := http.StatusForbidden
-		if host == "127.0.0.1:54321" {
-			want = http.StatusNoContent
+func TestAuthorizeRejectsForeignHostAndToken(t *testing.T) {
+	s := &Server{port: 54321, token: "secret"}
+	handler := s.authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/b/0/" {
+			t.Errorf("handler saw %q", r.URL.Path)
 		}
-		if res.Code != want {
-			t.Fatalf("host %q: %d, want %d", host, res.Code, want)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, tc := range []struct {
+		url  string
+		want int
+	}{
+		{"http://attacker.example:54321/secret/b/0/", http.StatusForbidden},
+		{"http://127.0.0.1:54322/secret/b/0/", http.StatusForbidden},
+		{"http://127.0.0.1:54321/b/0/", http.StatusNotFound},
+		{"http://127.0.0.1:54321/guess/b/0/", http.StatusNotFound},
+		{"http://127.0.0.1:54321/secret/b/0/", http.StatusNoContent},
+	} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest("GET", tc.url, nil))
+		if res.Code != tc.want {
+			t.Fatalf("%s: %d, want %d", tc.url, res.Code, tc.want)
+		}
+	}
+}
+
+func TestStartServesBooksUnderToken(t *testing.T) {
+	s := new(Server)
+	defer s.Close()
+	base, err := s.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Start()
+	if err != nil || again != base || !strings.HasPrefix(base, "http://127.0.0.1:") || len(s.token) < 20 {
+		t.Fatalf("base URL %q, again %q, %v", base, again, err)
+	}
+	for url, want := range map[string]int{base: http.StatusOK, strings.TrimSuffix(base, s.token+"/"): http.StatusNotFound} {
+		res, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != want {
+			t.Fatalf("%s: HTTP %d, want %d", url, res.StatusCode, want)
 		}
 	}
 }
@@ -79,6 +111,17 @@ func TestPageURLsDoNotCacheReplacedBooks(t *testing.T) {
 	}
 }
 
+func TestReaderRedirectKeepsRelativeLinks(t *testing.T) {
+	s := new(Server)
+	s.SetBooks([]*book.Book{pageBook(t, "page.png", nil)})
+	res := httptest.NewRecorder()
+	s.handleBook(res, httptest.NewRequest("GET", "/b/0?p=1", nil))
+	// Relative to /TOKEN/b/0, "0/?p=1" keeps the token the mux never saw.
+	if res.Code != http.StatusMovedPermanently || res.Header().Get("Location") != "0/?p=1" {
+		t.Fatalf("redirect: %d %q", res.Code, res.Header().Get("Location"))
+	}
+}
+
 func TestPageRejectsOversizedDimensions(t *testing.T) {
 	data := make([]byte, 54)
 	copy(data, "BM")
@@ -121,7 +164,7 @@ func TestReaderInversionQuery(t *testing.T) {
 func TestReaderTemplateCarriesPerPageInversion(t *testing.T) {
 	var page bytes.Buffer
 	err := readerTmpl.Execute(&page, map[string]any{
-		"N": 0, "Title": "Mixed EPUB", "Pages": 3, "Page": 0,
+		"Title": "Mixed EPUB", "Pages": 3, "Page": 0,
 		"Inverted": true, "Invertible": []bool{true, false, true},
 	})
 	if err != nil {
@@ -153,11 +196,11 @@ const load=()=>{img.complete=true;events.load();};
 assert.equal(filtered,true);assert.equal(img.style.visibility,'hidden');load();
 key('i');assert.equal(filtered,false);assert.equal(requests,1);assert.equal(img.style.visibility,'visible');
 key('i');assert.equal(filtered,true);
-key('l');assert.equal(src,'/b/0/page/1');assert.equal(filtered,false);assert.equal(img.style.visibility,'hidden');
+key('l');assert.equal(src,'page/1');assert.equal(filtered,false);assert.equal(img.style.visibility,'hidden');
 load();assert.equal(img.style.visibility,'visible');assert.equal(filtered,false);
 key('l');assert.equal(filtered,true);assert.equal(img.style.visibility,'hidden');
 key('i');assert.equal(filtered,false);assert.equal(requests,3);load();
-key('i');assert.equal(filtered,true);assert.equal(requests,3);assert.equal(url,'/b/0/?p=2&invert=1');
+key('i');assert.equal(filtered,true);assert.equal(requests,3);assert.equal(url,'?p=2&invert=1');
 events.click({clientX:0});assert.equal(filtered,false);load();
 `)
 	cmd.Stdin = strings.NewReader(script)

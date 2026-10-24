@@ -2,6 +2,7 @@
 package server
 
 import (
+	crand "crypto/rand"
 	"fmt"
 	"html/template"
 	"math/rand"
@@ -15,12 +16,13 @@ import (
 	"cbzr/internal/book"
 )
 
-// Server exposes open books at http://127.0.0.1:<port>/b/<n>/.
+// Server exposes open books at http://127.0.0.1:<port>/<token>/b/<n>/.
 type Server struct {
 	mu    sync.Mutex
 	books []*book.Book
 	ln    net.Listener
 	port  int
+	token string // random path prefix that keeps other local users out
 }
 
 // SetBooks replaces the served book list (index = pane order).
@@ -30,13 +32,13 @@ func (s *Server) SetBooks(bs []*book.Book) {
 	s.mu.Unlock()
 }
 
-// Start binds a random port in [50000, 60000) and serves in the background.
-// Idempotent: returns the existing port when already running.
-func (s *Server) Start() (int, error) {
+// Start binds a random port in [50000, 60000), serves in the background and
+// returns the base URL. Idempotent: returns the same URL when already running.
+func (s *Server) Start() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ln != nil {
-		return s.port, nil
+		return s.baseURL(), nil
 	}
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	var ln net.Listener
@@ -50,15 +52,21 @@ func (s *Server) Start() (int, error) {
 		}
 	}
 	if ln == nil {
-		return 0, fmt.Errorf("no free port in 50000-59999: %w", err)
+		return "", fmt.Errorf("no free port in 50000-59999: %w", err)
 	}
 	s.ln = ln
+	s.token = crand.Text()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/b/", s.handleBook)
 	go http.Serve(ln, s.authorize(mux)) //nolint:errcheck // dies with the process
-	return s.port, nil
+	return s.baseURL(), nil
+}
+
+// baseURL requires s.mu.
+func (s *Server) baseURL() string {
+	return fmt.Sprintf("http://127.0.0.1:%d/%s/", s.port, s.token)
 }
 
 // Port returns the bound port, or 0 when not running.
@@ -85,6 +93,7 @@ func (s *Server) Close() error {
 
 func (s *Server) authorize(next http.Handler) http.Handler {
 	authority := "127.0.0.1:" + strconv.Itoa(s.port)
+	next = http.StripPrefix("/"+s.token, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != authority {
 			http.Error(w, "invalid host", http.StatusForbidden)
@@ -155,6 +164,13 @@ func (s *Server) handleBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 2 && !strings.HasSuffix(r.URL.Path, "/") {
+		// The reader's links are relative to the slash. http.Redirect would
+		// build an absolute path without the stripped token.
+		w.Header().Set("Location", parts[1]+"/?"+r.URL.RawQuery)
+		w.WriteHeader(http.StatusMovedPermanently)
+		return
+	}
 	if len(parts) == 2 {
 		page := 0
 		if q := r.URL.Query().Get("p"); q != "" {
@@ -168,7 +184,7 @@ func (s *Server) handleBook(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		readerTmpl.Execute(w, map[string]any{ //nolint:errcheck
-			"N": n, "Title": b.Title, "Pages": b.Len(), "Page": page,
+			"Title": b.Title, "Pages": b.Len(), "Page": page,
 			"Inverted": r.URL.Query().Get("invert") == "1", "Invertible": invertible,
 		})
 		return
@@ -184,7 +200,7 @@ a{color:#8cf;text-decoration:none} a:hover{text-decoration:underline}
 </style>
 <h1>cbzr</h1>
 {{if not .}}<p>No books open.</p>{{end}}
-<ul>{{range .}}<li><a href="/b/{{.N}}/">{{.Title}}</a> — {{.Pages}} pages</li>{{end}}</ul>`))
+<ul>{{range .}}<li><a href="b/{{.N}}/">{{.Title}}</a> — {{.Pages}} pages</li>{{end}}</ul>`))
 
 var readerTmpl = template.Must(template.New("reader").Parse(`<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -198,19 +214,19 @@ img{max-width:100%;max-height:100%;object-fit:contain}
 img.inverted{filter:invert(1)}
 </style>
 <header>
-  <a href="/">index</a><strong>{{.Title}}</strong>
+  <a href="../../">index</a><strong>{{.Title}}</strong>
   <span id="pos"></span>
   <span style="opacity:.6">h/l or ←/→ pages, g/G first/last, i invert</span>
 </header>
 <main><img id="pg" alt="page"></main>
 <script>
-const pages={{.Pages}}, n={{.N}}, invertible={{.Invertible}};let p={{.Page}}, inverted={{.Inverted}};
+const pages={{.Pages}}, invertible={{.Invertible}};let p={{.Page}}, inverted={{.Inverted}};
 const img=document.getElementById('pg'),pos=document.getElementById('pos');
-function show(){p=Math.max(0,Math.min(pages-1,p));const src='/b/'+n+'/page/'+p;
+function show(){p=Math.max(0,Math.min(pages-1,p));const src='page/'+p;
 if(img.getAttribute('src')!==src){img.style.visibility='hidden';img.src=src;}
 img.classList.toggle('inverted',inverted&&invertible[p]);
-pos.textContent=(p+1)+'/'+pages;history.replaceState(null,'','/b/'+n+'/?p='+p+(inverted?'&invert=1':''));
-if(p+1<pages){(new Image()).src='/b/'+n+'/page/'+(p+1);}}
+pos.textContent=(p+1)+'/'+pages;history.replaceState(null,'','?p='+p+(inverted?'&invert=1':''));
+if(p+1<pages){(new Image()).src='page/'+(p+1);}}
 addEventListener('keydown',e=>{
 if(e.key==='l'||e.key==='ArrowRight'||e.key===' ')p++;
 else if(e.key==='h'||e.key==='ArrowLeft')p--;

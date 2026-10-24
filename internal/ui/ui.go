@@ -4,6 +4,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"math"
@@ -1218,15 +1219,17 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.syncServer()
-	port, err := m.srv.Start()
+	base, err := m.srv.Start()
 	if err != nil {
 		m.status = err.Error()
 		return m, nil
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/b/%d/?p=%d", port, m.active, p.page)
+	url := fmt.Sprintf("%sb/%d/?p=%d", base, m.active, p.page)
 	if p.inverted {
 		url += "&invert=1"
 	}
+	// shortcut: the token reaches the browser on its command line, which other
+	// local users can read with ps while it runs; a 0600 redirect file would hide it.
 	m.status = url
 	if m.openBrowser != nil {
 		if err := m.openBrowser(url); err != nil {
@@ -1326,24 +1329,35 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 		if err != nil {
 			return shotMsg{err: err}
 		}
-		defer f.Close()
 		if err := png.Encode(f, img); err != nil {
+			f.Close()
+			return shotMsg{err: err}
+		}
+		// Network file systems may report a failed write only here.
+		if err := f.Close(); err != nil {
 			return shotMsg{err: err}
 		}
 		return shotMsg{path: path}
 	}
 }
 
+// sanitize keeps letters and digits of any script, so screenshots of books
+// with Cyrillic or Japanese titles get distinct names.
 func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
+	name := []rune(strings.Map(func(r rune) rune {
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_':
 			return r
 		case r == ' ':
 			return '_'
 		}
 		return -1
-	}, s)
+	}, s))
+	if len(name) <= 60 {
+		return string(name) // up to 4 bytes a rune stays within a 255-byte file name
+	}
+	// Long titles keep a checksum of the rest, so volumes of a series stay apart.
+	return fmt.Sprintf("%s-%08x", string(name[:50]), crc32.ChecksumIEEE([]byte(string(name))))
 }
 
 // ---- OCR search -----------------------------------------------------------------
