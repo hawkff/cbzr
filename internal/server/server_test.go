@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -224,5 +225,42 @@ events.click({clientX:0});assert.equal(filtered,false);load();
 	cmd.Stdin = strings.NewReader(script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("browser inversion: %v\n%s", err, output)
+	}
+}
+
+func TestOwnerOnlyKnowsLoopbackOwners(t *testing.T) {
+	// Two sockets of one loopback connection, as /proc/net/tcp lists them.
+	table := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:C350 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1000        0 101 1 0 20 4 30 10 -1
+   1: 0100007F:D431 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1001        0 102 1 0 20 4 30 10 -1`
+	if uid, ok := socketUID(table, "0100007F:D431", "0100007F:C350"); !ok || uid != 1001 {
+		t.Fatalf("client owner = %d, %v", uid, ok)
+	}
+	if _, ok := socketUID(table, "0100007F:D432", "0100007F:C350"); ok {
+		t.Fatal("found a socket that is not in the table")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ownerOnly{ln}.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	c := <-accepted
+	defer c.Close()
+	if _, err := os.Stat("/proc/net/tcp"); err == nil {
+		if uid, ok := peerUID(c); !ok || uid != os.Getuid() {
+			t.Fatalf("own connection owner = %d, %v", uid, ok)
+		}
 	}
 }

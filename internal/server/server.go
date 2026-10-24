@@ -76,7 +76,7 @@ func (s *Server) startLocked() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/b/", s.handleBook)
-	go http.Serve(ln, s.authorize(mux)) //nolint:errcheck // dies with the process
+	go http.Serve(ownerOnly{ln}, s.authorize(mux)) //nolint:errcheck // dies with the process
 	return nil
 }
 
