@@ -360,21 +360,22 @@ func (b *Book) pageBytes(ctx context.Context, i int) ([]byte, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
-	var r io.ReadCloser
+	// Converters and text pages hand over their bytes; reading them through a
+	// Reader again would copy a page of up to 12 MB.
+	var data []byte
 	var err error
 	switch p := e.(type) {
 	case toolPage:
-		r, err = p.open(ctx)
+		data, err = p.render(ctx)
 	case epubTextPage:
-		r, err = p.open(ctx)
+		data, err = p.render(ctx)
 	default:
-		r, err = e.Open()
+		var r io.ReadCloser
+		if r, err = e.Open(); err == nil {
+			data, err = readBounded(contextReader{ctx, r}, maxPageBytes)
+			r.Close()
+		}
 	}
-	if err != nil {
-		return nil, "", err
-	}
-	defer r.Close()
-	data, err := readBounded(contextReader{ctx, r}, maxPageBytes)
 	if err != nil {
 		return nil, "", err
 	}
