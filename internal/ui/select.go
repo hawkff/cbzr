@@ -1,10 +1,15 @@
 package ui
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"image"
 	"math"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -319,5 +324,39 @@ func (m Model) copyText(text, status string) (tea.Model, tea.Cmd) {
 	m.clipGen++
 	m.status = status
 	gen := m.clipGen
-	return m, tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return clipDoneMsg{gen} })
+	return m, tea.Batch(
+		tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return clipDoneMsg{gen} }),
+		func() tea.Msg { copyLocally(text); return nil },
+	)
+}
+
+// copyLocally also hands text to local clipboard tools: tmux drops OSC 52
+// under its default set-clipboard, and macOS Terminal and VTE terminals such
+// as GNOME Terminal ignore it. Missing tools fail silently.
+func copyLocally(text string) {
+	run := func(tool ...string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, tool[0], tool[1:]...)
+		cmd.Stdin = strings.NewReader(text)
+		return cmd.Run()
+	}
+	if os.Getenv("TMUX") != "" {
+		run("tmux", "load-buffer", "-w", "-") //nolint:errcheck
+	}
+	var tools [][]string
+	if runtime.GOOS == "darwin" {
+		tools = append(tools, []string{"pbcopy"})
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		tools = append(tools, []string{"wl-copy"})
+	}
+	if os.Getenv("DISPLAY") != "" { // also Xwayland when wl-copy is missing
+		tools = append(tools, []string{"xclip", "-selection", "clipboard"})
+	}
+	for _, tool := range tools {
+		if run(tool...) == nil {
+			return
+		}
+	}
 }
