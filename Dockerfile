@@ -6,7 +6,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go mod tidy && gofmt -l . && go vet ./...
+RUN go mod tidy -diff && test -z "$(gofmt -l .)" && go vet ./...
 ENV CGO_ENABLED=0
 RUN LDFLAGS="-s -w -X main.version=${VERSION#v}" && \
     GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/cbzr-darwin-arm64 . && \
