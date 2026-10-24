@@ -75,6 +75,21 @@ func TestRotateQuarterTurnsClockwise(t *testing.T) {
 	}
 }
 
+func TestZoomKeepsAtLeastOnePixel(t *testing.T) {
+	for _, size := range []image.Point{{1, 1}, {1, 40}, {40, 1}, {3, 5}} {
+		src := image.NewRGBA(image.Rectangle{Min: image.Pt(2, 3), Max: image.Pt(2+size.X, 3+size.Y)})
+		for rot := range 4 {
+			for _, center := range []float64{0, 0.5, 1} {
+				got := Transform(src, rot, 8, center, center)
+				full := Transform(src, rot, 1, 0.5, 0.5).Bounds()
+				if got.Bounds().Empty() || !got.Bounds().In(full) {
+					t.Fatalf("size %v, rotation %d, center %g: crop %v outside %v", size, rot, center, got.Bounds(), full)
+				}
+			}
+		}
+	}
+}
+
 func TestHighlightTintsRectanglesOnly(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
