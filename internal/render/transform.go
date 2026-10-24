@@ -3,6 +3,7 @@ package render
 import (
 	"image"
 	"image/draw"
+	"sync"
 )
 
 type subImager interface {
@@ -11,7 +12,8 @@ type subImager interface {
 
 // Transform applies a clockwise quarter-turn rotation and a zoom crop.
 // rot is quarter turns (0-3), zoom >= 1, cx/cy locate the visible center
-// as fractions of the (rotated) image.
+// as fractions of the (rotated) image. The result may share pixels with src
+// or with other callers; treat it as read-only and never Recycle it.
 func Transform(img image.Image, rot int, zoom, cx, cy float64) image.Image {
 	img = rotate(img, rot&3)
 	if zoom <= 1.001 {
@@ -80,24 +82,49 @@ func Highlight(src image.Image, rects []image.Rectangle) *image.RGBA {
 	return dst
 }
 
+// rotations keeps the latest quarter turns. Panning or zooming a rotated
+// page and every rotated webtoon frame turn the same pages again; two
+// entries cover a spread, two panes or the pages of a webtoon frame.
+var rotations struct {
+	sync.Mutex
+	entries [2]rotation
+	next    int
+}
+
+type rotation struct {
+	src image.Image
+	q   int
+	dst *image.RGBA
+}
+
 // rotate turns src by q quarter turns clockwise. Pixels move through an
-// RGBA copy; At and Set would box a color per pixel.
+// RGBA copy; At and Set would box a color per pixel. The result is shared
+// with later calls for the same src.
 func rotate(src image.Image, q int) image.Image {
 	if q == 0 {
 		return src
 	}
+	rotations.Lock()
+	for _, r := range rotations.entries {
+		if r.dst != nil && r.src == src && r.q == q {
+			rotations.Unlock()
+			return r.dst
+		}
+	}
+	rotations.Unlock()
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	rgba, ok := src.(*image.RGBA)
 	if !ok {
-		rgba = image.NewRGBA(b)
+		rgba = getRGBA(b)
+		defer Recycle(rgba)
 		draw.Draw(rgba, b, src, b.Min, draw.Src)
 	}
 	dw, dh := h, w
 	if q == 2 {
 		dw, dh = w, h
 	}
-	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	dst := getRGBA(image.Rect(0, 0, dw, dh))
 	for y := 0; y < h; y++ {
 		row := rgba.Pix[rgba.PixOffset(b.Min.X, b.Min.Y+y):]
 		for x := 0; x < w; x++ {
@@ -113,7 +140,23 @@ func rotate(src image.Image, q int) image.Image {
 			*(*[4]byte)(dst.Pix[i:]) = [4]byte(row[4*x:])
 		}
 	}
+	rotations.Lock()
+	rotations.entries[rotations.next] = rotation{src, q, dst}
+	rotations.next = (rotations.next + 1) % len(rotations.entries)
+	rotations.Unlock()
 	return dst
+}
+
+// forgetRotations drops the turns of img, or the turn that is img, before
+// its pixels change.
+func forgetRotations(img *image.RGBA) {
+	rotations.Lock()
+	defer rotations.Unlock()
+	for i, r := range rotations.entries {
+		if r.src == image.Image(img) || r.dst == img {
+			rotations.entries[i] = rotation{}
+		}
+	}
 }
 
 func clampf(v, lo, hi float64) float64 {
