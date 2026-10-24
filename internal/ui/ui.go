@@ -1550,11 +1550,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			return nil, fmt.Errorf("text pages in webtoon need pixel rendering: %s", hint)
 		}
-		img, err := b.PageContext(ctx, pg)
-		if err == nil && webtoon && inverted && b.CanInvertPage(pg) {
-			img = render.Invert(img)
-		}
-		return img, err
+		return b.PageContext(ctx, pg)
 	}
 	mk := func(slot, pg int) tea.Cmd {
 		id := renderImageID(i, slot, gen)
@@ -1571,7 +1567,11 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			outPage, outOffset := pg, 0.0
 			if webtoon {
 				cw, ch := render.CellSize()
-				img, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch)
+				var invert func(int) bool
+				if inverted {
+					invert = b.CanInvertPage
+				}
+				img, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch, invert)
 			} else {
 				img, err = load(pg)
 				if err == nil {

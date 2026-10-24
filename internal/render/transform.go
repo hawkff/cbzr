@@ -42,13 +42,20 @@ func Transform(img image.Image, rot int, zoom, cx, cy float64) image.Image {
 func Invert(src image.Image) *image.RGBA {
 	dst := image.NewRGBA(src.Bounds())
 	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
-	for i := 0; i < len(dst.Pix); i += 4 {
-		a := dst.Pix[i+3]
-		dst.Pix[i] = a - dst.Pix[i]
-		dst.Pix[i+1] = a - dst.Pix[i+1]
-		dst.Pix[i+2] = a - dst.Pix[i+2]
-	}
+	invertRect(dst, dst.Bounds())
 	return dst
+}
+
+// invertRect inverts the premultiplied colors inside r in place.
+func invertRect(img *image.RGBA, r image.Rectangle) {
+	r = r.Intersect(img.Bounds())
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		row := img.Pix[img.PixOffset(r.Min.X, y):img.PixOffset(r.Max.X, y)]
+		for i := 0; i < len(row); i += 4 {
+			a := row[i+3]
+			row[i], row[i+1], row[i+2] = a-row[i], a-row[i+1], a-row[i+2]
+		}
+	}
 }
 
 // Highlight returns a copy of src with the rectangles tinted toward light

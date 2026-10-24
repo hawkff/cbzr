@@ -287,7 +287,7 @@ func (r *reader) webtoonFrame(width, height int) (*image.RGBA, error) {
 	}
 	img, page, offset, err := render.ComposeWebtoon(
 		load, r.book.Len(), r.state.Page, r.state.Offset, scrollPixels,
-		width, height, 0, 1, 1,
+		width, height, 0, 1, 1, nil,
 	)
 	if err == nil {
 		if page == r.state.Page && math.Abs(offset-r.state.Offset) < 1e-9 {
