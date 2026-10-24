@@ -13,7 +13,7 @@ func TestCopyReachesLocalClipboardTools(t *testing.T) {
 	if err != nil {
 		t.Skip("clipboard helpers need sh")
 	}
-	localCopy.gen = 0
+	localCopy.newest.Store(0)
 	dir := t.TempDir()
 	log := filepath.Join(dir, "log")
 	t.Setenv("CBZR_TEST_CLIPBOARD", log)
