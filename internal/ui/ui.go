@@ -1587,23 +1587,38 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			}
 			var img image.Image
 			var err error
+			var owned []*image.RGBA // copies made for this frame alone
+			defer func() {
+				for _, o := range owned {
+					render.Recycle(o)
+				}
+			}()
+			invert := false // left to the renderer, after scaling
 			outPage, outOffset := pg, 0.0
 			if webtoon {
 				cw, ch := render.CellSize()
-				var invert func(int) bool
+				var invertPage func(int) bool
 				if inverted {
-					invert = b.CanInvertPage
+					invertPage = b.CanInvertPage
 				}
-				img, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch, invert)
+				var frame *image.RGBA
+				frame, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch, invertPage)
+				if err == nil {
+					img, owned = frame, append(owned, frame)
+				}
 			} else {
 				img, err = load(pg)
 				if err == nil {
-					if inverted && b.CanInvertPage(pg) {
-						img = render.Invert(img)
-					}
+					invert = inverted && b.CanInvertPage(pg)
 					if hasSel && sel.page == pg {
 						if _, boxes := b.Select(pg, sel.x0, sel.y0, sel.x1, sel.y1); len(boxes) > 0 {
-							img = render.Highlight(img, pixelRects(boxes, img.Bounds()))
+							if invert {
+								// The tint must land on the inverted page to stay light.
+								inv := render.Invert(img)
+								img, owned, invert = inv, append(owned, inv), false
+							}
+							lit := render.Highlight(img, pixelRects(boxes, img.Bounds()))
+							img, owned = lit, append(owned, lit)
 						}
 					}
 					img = render.Transform(img, rot, zoom, cx, cy)
@@ -1615,7 +1630,7 @@ func (m *Model) renderPane(i int) tea.Cmd {
 			if err != nil {
 				return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, err: err}
 			}
-			res, err := r.Render(img, id, cols, rows)
+			res, err := r.Render(img, id, cols, rows, invert)
 			return renderedMsg{target: p, book: b, pane: i, slot: slot, gen: gen, page: outPage, cols: cols, rows: rows, offset: outOffset, scroll: scroll, res: res, err: err}
 		}
 	}

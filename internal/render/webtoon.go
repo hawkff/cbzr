@@ -15,7 +15,8 @@ type PageLoader func(int) (image.Image, error)
 // to the viewport; narrow pages keep their native size. Offset is the
 // fractional vertical position in page. scrollRows may contain fractional
 // terminal rows and may cross page boundaries. Pages for which invert reports
-// true appear inverted; invert may be nil.
+// true appear inverted; invert may be nil. Pass the frame to Recycle once it
+// is drawn.
 func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows float64, cols, rows, rot int, cw, ch float64, invert func(int) bool) (*image.RGBA, int, float64, error) {
 	if pageCount < 1 {
 		return nil, 0, 0, fmt.Errorf("webtoon: no pages")
@@ -101,7 +102,8 @@ func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows flo
 	offset = position / float64(pageH)
 
 	topPage, topOffset := page, offset
-	viewport := image.NewRGBA(image.Rect(0, 0, viewW, viewH))
+	viewport := getRGBA(image.Rect(0, 0, viewW, viewH))
+	clear(viewport.Pix) // margins and the space past the last page stay transparent
 	y := 0
 	for y < viewH {
 		top := 0

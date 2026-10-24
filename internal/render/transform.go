@@ -40,7 +40,7 @@ func Transform(img image.Image, rot int, zoom, cx, cy float64) image.Image {
 
 // Invert returns a color-inverted copy, preserving alpha and image bounds.
 func Invert(src image.Image) *image.RGBA {
-	dst := image.NewRGBA(src.Bounds())
+	dst := getRGBA(src.Bounds())
 	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
 	invertRect(dst, dst.Bounds())
 	return dst
@@ -62,7 +62,7 @@ func invertRect(img *image.RGBA, r image.Rectangle) {
 // blue, halfway, so the text under a selection stays legible on plain and
 // inverted pages.
 func Highlight(src image.Image, rects []image.Rectangle) *image.RGBA {
-	dst := image.NewRGBA(src.Bounds())
+	dst := getRGBA(src.Bounds())
 	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
 	tint := [3]uint16{128, 176, 255}
 	for _, r := range rects {

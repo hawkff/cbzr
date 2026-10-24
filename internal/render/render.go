@@ -5,7 +5,10 @@
 //   - half-block cells (works everywhere)
 package render
 
-import "image"
+import (
+	"image"
+	"sync"
+)
 
 // Result is a rendered image occupying Cols x Rows terminal cells.
 type Result struct {
@@ -14,13 +17,32 @@ type Result struct {
 	Transmit   []byte   // out-of-band bytes to write to the tty before Lines are shown
 }
 
-// Renderer converts an image into terminal cells.
+// Renderer converts an image into terminal cells. With invert, it inverts the
+// colors after scaling, which costs far less than inverting a full page.
 type Renderer interface {
 	Name() string
 	SetCellSize(cw, ch float64)
-	Render(img image.Image, id uint32, maxCols, maxRows int) (Result, error)
+	Render(img image.Image, id uint32, maxCols, maxRows int, invert bool) (Result, error)
 	Delete(id uint32) []byte // bytes that free image id in the terminal (nil if n/a)
 }
+
+// Frames and scaled copies take megabytes each and live for one render, so
+// they come from a pool.
+var rgbaPool sync.Pool
+
+// getRGBA returns an image for r with unspecified pixels.
+func getRGBA(r image.Rectangle) *image.RGBA {
+	n := 4 * r.Dx() * r.Dy()
+	if img, ok := rgbaPool.Get().(*image.RGBA); ok && cap(img.Pix) >= n {
+		img.Pix, img.Stride, img.Rect = img.Pix[:n], 4*r.Dx(), r
+		return img
+	}
+	return image.NewRGBA(r)
+}
+
+// Recycle hands back a frame from ComposeWebtoon, Invert or Highlight once
+// nothing refers to it any more.
+func Recycle(img *image.RGBA) { rgbaPool.Put(img) }
 
 // fitBox scales iw x ih pixels to fit maxCols x maxRows cells of cw x ch
 // pixels each, preserving aspect ratio. Returns the cell grid and pixel size.
