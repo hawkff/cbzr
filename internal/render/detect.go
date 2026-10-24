@@ -10,13 +10,23 @@ import (
 // hosting the tmux client — likely speaks the kitty graphics protocol with
 // Unicode placeholders (kitty, ghostty).
 func supportsKitty() bool {
-	if termSuggestsKitty(os.Getenv("TERM"), os.Getenv("TERM_PROGRAM")) {
+	// shortcut: zellij keeps kitty's TERM but drops its graphics, and a terminal
+	// started from inside zellij inherits ZELLIJ too; -r kitty covers that case.
+	if os.Getenv("ZELLIJ") != "" {
+		return false
+	}
+	prog := os.Getenv("TERM_PROGRAM")
+	if termSuggestsKitty(os.Getenv("TERM"), prog) {
 		return true
 	}
-	// Markers inherited from the outer terminal, visible inside tmux too.
-	for _, v := range []string{"KITTY_WINDOW_ID", "KITTY_PID", "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR"} {
-		if os.Getenv(v) != "" {
-			return true
+	// Markers inherited from the outer terminal, visible inside tmux too. GNU
+	// screen and terminals started from kitty, such as VS Code's, inherit them
+	// as well; screen sets STY and the others name themselves in TERM_PROGRAM.
+	if os.Getenv("STY") == "" && (prog == "" || prog == "tmux") {
+		for _, v := range []string{"KITTY_WINDOW_ID", "KITTY_PID", "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR"} {
+			if os.Getenv(v) != "" {
+				return true
+			}
 		}
 	}
 	if os.Getenv("TMUX") != "" {
