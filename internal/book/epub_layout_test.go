@@ -18,7 +18,7 @@ import (
 
 func bundledEPUBLayout(t *testing.T) *epubLayout {
 	t.Helper()
-	fonts, err := parseEPUBFonts(goregular.TTF)
+	fonts, err := parseEPUBFonts(goregular.TTF, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestEPUBRubyInlineAndPageBounds(t *testing.T) {
 						t.Fatal("ruby outside annotation band")
 					}
 					for _, run := range annotation.runs {
-						if run.Size != fixed.I(16) {
+						if run.size != fixed.I(16) {
 							t.Fatal("reading is not smaller")
 						}
 					}

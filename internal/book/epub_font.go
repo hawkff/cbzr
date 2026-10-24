@@ -29,7 +29,7 @@ var epubFallbackFonts = sync.OnceValues(findEPUBFallbackFonts)
 
 func findEPUBFallbackFonts() ([]*font.Font, error) {
 	if path := os.Getenv("CBZR_EPUB_FALLBACK_FONT"); path != "" {
-		fonts, err := readEPUBFallbackFonts(path)
+		fonts, err := readEPUBFallbackFonts(path, maxEPUBFontFaces)
 		if err != nil {
 			return nil, fmt.Errorf("EPUB fallback font: %w", err)
 		}
@@ -74,16 +74,20 @@ func findEPUBFallbackFonts() ([]*font.Font, error) {
 			"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
 		}
 	}
+	// The faces of these collections are regional or metric variants of the
+	// same characters. Each parsed face copies the shared tables, which cost
+	// about 200 MB for all ten faces of Noto Sans CJK, so one face is enough.
 	var fonts []*font.Font
 	for _, path := range paths {
-		if found, err := readEPUBFallbackFonts(path); err == nil {
+		if found, err := readEPUBFallbackFonts(path, 1); err == nil {
 			fonts = append(fonts, found...)
 		}
 	}
 	return fonts, nil
 }
 
-func readEPUBFallbackFonts(path string) ([]*font.Font, error) {
+// readEPUBFallbackFonts parses up to faces faces of a font file.
+func readEPUBFallbackFonts(path string, faces int) ([]*font.Font, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -93,10 +97,11 @@ func readEPUBFallbackFonts(path string) ([]*font.Font, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseEPUBFonts(data)
+	return parseEPUBFonts(data, faces)
 }
 
-func parseEPUBFonts(data []byte) ([]*font.Font, error) {
+// parseEPUBFonts parses up to faces faces of a TTF, OTF or collection.
+func parseEPUBFonts(data []byte, faces int) ([]*font.Font, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("font must be TTF/OTF or TTC/OTC")
 	}
@@ -119,6 +124,7 @@ func parseEPUBFonts(data []byte) ([]*font.Font, error) {
 	if len(loaders) < 1 || len(loaders) > maxEPUBFontFaces {
 		return nil, fmt.Errorf("font collection must contain 1 to %d faces", maxEPUBFontFaces)
 	}
+	loaders = loaders[:min(len(loaders), faces)]
 	fonts := make([]*font.Font, 0, len(loaders))
 	for _, loader := range loaders {
 		f, err := font.NewFont(loader)
@@ -134,7 +140,7 @@ func parseEPUBFonts(data []byte) ([]*font.Font, error) {
 var epubBundledFonts = sync.OnceValues(func() ([]*font.Font, error) {
 	var fonts []*font.Font
 	for _, data := range [][]byte{goregular.TTF, gobold.TTF, goitalic.TTF, gobolditalic.TTF} {
-		parsed, err := parseEPUBFonts(data)
+		parsed, err := parseEPUBFonts(data, 1)
 		if err != nil {
 			return nil, err
 		}

@@ -248,13 +248,28 @@ func epubClusterFaces(inputs []shaping.Input, text []rune, faces []*font.Face) [
 func freezeEPUBLine(line shaping.Line, text string) epubLine {
 	line = slices.Clone(line)
 	slices.SortFunc(line, func(a, b shaping.Output) int { return int(a.VisualIndex - b.VisualIndex) })
-	result := epubLine{text: text}
+	result := epubLine{text: text, runs: make([]epubRun, 0, len(line))}
 	var x fixed.Int26_6
 	for _, output := range line {
-		f := output.Face.Font
-		output.Face = nil
-		output.Glyphs = slices.Clone(output.Glyphs)
-		result.runs = append(result.runs, epubRun{Output: output, font: f, x: x})
+		run := epubRun{
+			font: output.Face.Font, x: x, advance: output.Advance, size: output.Size, direction: output.Direction,
+			ascent:  max(output.LineBounds.Ascent.Ceil(), output.GlyphBounds.Ascent.Ceil()),
+			descent: max((-output.LineBounds.Descent).Ceil(), (-output.GlyphBounds.Descent).Ceil()),
+			glyphs:  make([]epubGlyph, len(output.Glyphs)),
+		}
+		var gx fixed.Int26_6
+		for i, g := range output.Glyphs {
+			left := gx + g.XOffset + g.XBearing
+			if i == 0 || left < run.inkLeft {
+				run.inkLeft = left
+			}
+			if i == 0 || left+g.Width > run.inkRight {
+				run.inkRight = left + g.Width
+			}
+			run.glyphs[i] = epubGlyph{g.GlyphID, g.Advance, g.XOffset, g.YOffset, int32(g.TextIndex()), int32(g.RunesCount())}
+			gx += g.Advance
+		}
+		result.runs = append(result.runs, run)
 		x += output.Advance
 	}
 	return result
@@ -262,8 +277,7 @@ func freezeEPUBLine(line shaping.Line, text string) epubLine {
 
 func epubLineBounds(line epubLine) (ascent, descent int) {
 	for _, run := range line.runs {
-		ascent = max(ascent, run.LineBounds.Ascent.Ceil(), run.GlyphBounds.Ascent.Ceil())
-		descent = max(descent, (-run.LineBounds.Descent).Ceil(), (-run.GlyphBounds.Descent).Ceil())
+		ascent, descent = max(ascent, run.ascent), max(descent, run.descent)
 	}
 	return
 }
@@ -271,20 +285,15 @@ func epubLineBounds(line epubLine) (ascent, descent int) {
 func epubLineWidth(line epubLine) fixed.Int26_6 {
 	var width fixed.Int26_6
 	for _, run := range line.runs {
-		width = max(width, run.x+run.Advance)
+		width = max(width, run.x+run.advance)
 	}
 	return width
 }
 
 func epubLineFits(line epubLine) bool {
 	for _, run := range line.runs {
-		x := run.x
-		for _, glyph := range run.Glyphs {
-			left := x + glyph.XOffset + glyph.XBearing
-			if left < -fixed.I(epubMargin) || left+glyph.Width > fixed.I(epubPageWidth-epubMargin) {
-				return false
-			}
-			x += glyph.Advance
+		if len(run.glyphs) > 0 && (run.x+run.inkLeft < -fixed.I(epubMargin) || run.x+run.inkRight > fixed.I(epubPageWidth-epubMargin)) {
+			return false
 		}
 	}
 	return true
@@ -336,12 +345,12 @@ func (l *epubLayout) paragraph(p epubParagraph, heading bool) error {
 			left, right := fixed.I(epubPageWidth), fixed.Int26_6(0)
 			for _, run := range line.runs {
 				x := run.x
-				for _, glyph := range run.Glyphs {
-					if glyph.TextIndex() < ruby.end && glyph.TextIndex()+glyph.RunesCount() > ruby.start {
+				for _, glyph := range run.glyphs {
+					if int(glyph.index) < ruby.end && int(glyph.index+glyph.runes) > ruby.start {
 						left = min(left, x)
-						right = max(right, x+glyph.Advance)
+						right = max(right, x+glyph.advance)
 					}
-					x += glyph.Advance
+					x += glyph.advance
 				}
 			}
 			if right <= left {
