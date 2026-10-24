@@ -22,12 +22,14 @@ type Kitty struct {
 	mu     sync.Mutex
 	cw, ch float64
 	tmux   bool
+	base   uint32 // offsets image ids: tmux panes of one terminal share its images
 }
 
 // NewKitty creates the kitty renderer using the detected cell size.
 func NewKitty() *Kitty {
 	cw, ch := CellSize()
-	k := &Kitty{cw: cw, ch: ch, tmux: os.Getenv("TMUX") != ""}
+	// Placeholders carry the id in a 24-bit color, so the base stays below 2^24.
+	k := &Kitty{cw: cw, ch: ch, tmux: os.Getenv("TMUX") != "", base: uint32(os.Getpid()%0xffff) << 8}
 	if k.tmux {
 		// tmux drops APC by default; needs tmux >= 3.3.
 		exec.Command("tmux", "set", "-p", "allow-passthrough", "on").Run() //nolint:errcheck
@@ -45,6 +47,7 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 	k.mu.Lock()
 	cw, ch := k.cw, k.ch
 	k.mu.Unlock()
+	id += k.base
 	maxCols = min(maxCols, len(diacritics))
 	maxRows = min(maxRows, len(diacritics))
 	b := img.Bounds()
@@ -110,7 +113,7 @@ func (k *Kitty) Render(img image.Image, id uint32, maxCols, maxRows int) (Result
 // Delete frees image id (and its placements) in the terminal.
 func (k *Kitty) Delete(id uint32) []byte {
 	var out bytes.Buffer
-	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id), "")
+	k.apc(&out, fmt.Sprintf("a=d,d=I,i=%d,q=2", id+k.base), "")
 	return out.Bytes()
 }
 
