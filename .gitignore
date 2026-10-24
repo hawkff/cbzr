@@ -20,7 +20,5 @@ credentials.json
 
 # Local build and test outputs
 /cbzr
-/cbzr.exe
 *.test
-*.test.exe
 /coverage.out
