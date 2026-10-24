@@ -164,6 +164,13 @@ func (s *Server) handleBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 2 && !strings.HasSuffix(r.URL.Path, "/") {
+		// The reader's links are relative to the slash. http.Redirect would
+		// build an absolute path without the stripped token.
+		w.Header().Set("Location", parts[1]+"/?"+r.URL.RawQuery)
+		w.WriteHeader(http.StatusMovedPermanently)
+		return
+	}
 	if len(parts) == 2 {
 		page := 0
 		if q := r.URL.Query().Get("p"); q != "" {

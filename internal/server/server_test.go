@@ -111,6 +111,17 @@ func TestPageURLsDoNotCacheReplacedBooks(t *testing.T) {
 	}
 }
 
+func TestReaderRedirectKeepsRelativeLinks(t *testing.T) {
+	s := new(Server)
+	s.SetBooks([]*book.Book{pageBook(t, "page.png", nil)})
+	res := httptest.NewRecorder()
+	s.handleBook(res, httptest.NewRequest("GET", "/b/0?p=1", nil))
+	// Relative to /TOKEN/b/0, "0/?p=1" keeps the token the mux never saw.
+	if res.Code != http.StatusMovedPermanently || res.Header().Get("Location") != "0/?p=1" {
+		t.Fatalf("redirect: %d %q", res.Code, res.Header().Get("Location"))
+	}
+}
+
 func TestPageRejectsOversizedDimensions(t *testing.T) {
 	data := make([]byte, 54)
 	copy(data, "BM")

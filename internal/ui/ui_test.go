@@ -516,6 +516,9 @@ func TestScreenshotNamesKeepEveryScript(t *testing.T) {
 	if got := sanitize("Война и мир: том 1 / 漫画?"); got != "Война_и_мир_том_1__漫画" {
 		t.Fatalf("sanitize = %q", got)
 	}
+	if got := sanitize(strings.Repeat("漫", 100)); got != strings.Repeat("漫", 60) {
+		t.Fatalf("long title kept %d runes", len([]rune(got)))
+	}
 }
 
 func TestSafeTextRemovesArchiveControls(t *testing.T) {

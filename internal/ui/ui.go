@@ -1227,6 +1227,8 @@ func (m Model) browse() (tea.Model, tea.Cmd) {
 	if p.inverted {
 		url += "&invert=1"
 	}
+	// shortcut: the token reaches the browser on its command line, which other
+	// local users can read with ps while it runs; a 0600 redirect file would hide it.
 	m.status = url
 	if m.openBrowser != nil {
 		if err := m.openBrowser(url); err != nil {
@@ -1341,7 +1343,7 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 // sanitize keeps letters and digits of any script, so screenshots of books
 // with Cyrillic or Japanese titles get distinct names.
 func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
+	name := []rune(strings.Map(func(r rune) rune {
 		switch {
 		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_':
 			return r
@@ -1349,7 +1351,9 @@ func sanitize(s string) string {
 			return '_'
 		}
 		return -1
-	}, s)
+	}, s))
+	// 60 runes of up to 4 bytes leave room in a 255-byte file name.
+	return string(name[:min(len(name), 60)])
 }
 
 // ---- OCR search -----------------------------------------------------------------
