@@ -39,6 +39,8 @@ text in books:
 
 Comics, EPUB, FB2 and DOCX work without these packages. Use Kitty or Ghostty
 for pixel graphics; other truecolor terminals use the half-block renderer.
+cbzr runs inside the terminal and needs no X server: in a Wayland session it
+copies through `wl-copy` and opens links through `xdg-open`.
 
 ## Formats
 
