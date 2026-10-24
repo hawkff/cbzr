@@ -14,16 +14,19 @@ type PageLoader func(int) (image.Image, error)
 // ComposeWebtoon builds a viewport from consecutive pages. Wide pages shrink
 // to the viewport; narrow pages keep their native size. Offset is the
 // fractional vertical position in page. scrollRows may contain fractional
-// terminal rows and may cross page boundaries. Pages for which invert reports
-// true appear inverted; invert may be nil. Pass the frame to Recycle once it
-// is drawn.
-func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows float64, cols, rows, rot int, cw, ch float64, invert func(int) bool) (*image.RGBA, int, float64, error) {
+// terminal rows and may cross page boundaries. One viewport pixel covers unit
+// terminal pixels each way, so a renderer that shows less detail gets a
+// smaller frame with the same layout. Pages for which invert reports true
+// appear inverted; invert may be nil. Pass the frame to Recycle once it is
+// drawn.
+func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows float64, cols, rows, rot int, cw, ch, unit float64, invert func(int) bool) (*image.RGBA, int, float64, error) {
 	if pageCount < 1 {
 		return nil, 0, 0, fmt.Errorf("webtoon: no pages")
 	}
 	page = min(pageCount-1, max(0, page))
 	cols, rows = max(1, cols), max(1, rows)
-	cw, ch = max(1, cw), max(1, ch)
+	unit = max(1, unit)
+	cw, ch = max(1, cw)/unit, max(1, ch)/unit
 	viewW := max(1, int(math.Round(float64(cols)*cw)))
 	viewH := max(1, int(math.Round(float64(rows)*ch)))
 
@@ -41,7 +44,7 @@ func ComposeWebtoon(load PageLoader, pageCount, page int, offset, scrollRows flo
 		if b.Dx() < 1 || b.Dy() < 1 {
 			return pageImage{}, fmt.Errorf("webtoon: page %d has invalid dimensions", i+1)
 		}
-		scale := min(1, float64(viewW)/float64(b.Dx()))
+		scale := min(1/unit, float64(viewW)/float64(b.Dx()))
 		width := max(1, int(math.Round(float64(b.Dx())*scale)))
 		height := max(1, int(math.Round(float64(b.Dy())*scale)))
 		return pageImage{img: img, width: width, height: height}, nil

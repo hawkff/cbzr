@@ -15,7 +15,7 @@ func TestComposeWebtoonScrollsAcrossPages(t *testing.T) {
 	}
 	load := func(i int) (image.Image, error) { return pages[i], nil }
 
-	img, page, offset, err := ComposeWebtoon(load, len(pages), 0, 0, 150, 100, 100, 0, 1, 1, nil)
+	img, page, offset, err := ComposeWebtoon(load, len(pages), 0, 0, 150, 100, 100, 0, 1, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestComposeWebtoonScrollsAcrossPages(t *testing.T) {
 	assertPixel(t, img, 50, 25, color.RGBA{R: 255, A: 255})
 	assertPixel(t, img, 50, 75, color.RGBA{B: 255, A: 255})
 
-	img, page, offset, err = ComposeWebtoon(load, len(pages), 0, 0, 250, 100, 100, 0, 1, 1, nil)
+	img, page, offset, err = ComposeWebtoon(load, len(pages), 0, 0, 250, 100, 100, 0, 1, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestComposeWebtoonScrollsBackwardAcrossPage(t *testing.T) {
 	}
 	load := func(i int) (image.Image, error) { return pages[i], nil }
 
-	img, page, offset, err := ComposeWebtoon(load, len(pages), 1, 0.25, -100, 100, 100, 0, 1, 1, nil)
+	img, page, offset, err := ComposeWebtoon(load, len(pages), 1, 0.25, -100, 100, 100, 0, 1, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestComposeWebtoonKeepsStripEndAtViewportBottom(t *testing.T) {
 	}
 	load := func(i int) (image.Image, error) { return pages[i], nil }
 
-	img, page, offset, err := ComposeWebtoon(load, len(pages), 1, 1, 0, 100, 100, 0, 1, 1, nil)
+	img, page, offset, err := ComposeWebtoon(load, len(pages), 1, 1, 0, 100, 100, 0, 1, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestComposeWebtoonDoesNotUpscaleNarrowPages(t *testing.T) {
 	pages := []image.Image{solidPage(40, 200, pageColor)}
 	load := func(i int) (image.Image, error) { return pages[i], nil }
 
-	img, _, _, err := ComposeWebtoon(load, 1, 0, 0, 0, 100, 100, 0, 1, 1, nil)
+	img, _, _, err := ComposeWebtoon(load, 1, 0, 0, 0, 100, 100, 0, 1, 1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestComposeWebtoonInvertsShownPages(t *testing.T) {
 	}
 	load := func(i int) (image.Image, error) { return pages[i], nil }
 	// Only the narrow middle page inverts; its blank margins stay transparent.
-	img, _, _, err := ComposeWebtoon(load, len(pages), 0, 0, 30, 100, 100, 0, 1, 1, func(i int) bool { return i == 1 })
+	img, _, _, err := ComposeWebtoon(load, len(pages), 0, 0, 30, 100, 100, 0, 1, 1, 1, func(i int) bool { return i == 1 })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +104,34 @@ func TestComposeWebtoonInvertsShownPages(t *testing.T) {
 	if pages[1].(*image.RGBA).Pix[2] != 255 {
 		t.Fatal("inversion changed the loaded page")
 	}
+}
+
+func TestComposeWebtoonAtCellResolutionKeepsLayout(t *testing.T) {
+	red, blue := color.RGBA{R: 255, A: 255}, color.RGBA{B: 255, A: 255}
+	pages := []image.Image{solidPage(40, 400, red), solidPage(400, 400, blue)}
+	load := func(i int) (image.Image, error) { return pages[i], nil }
+	// 25x25 cells of 8x16 pixels, scrolled 10 rows: the full frame is
+	// 200x400; one pixel per cell across gives 25x50.
+	full, fullPage, fullOffset, err := ComposeWebtoon(load, 2, 0, 0, 10, 25, 25, 0, 8, 16, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	small, page, offset, err := ComposeWebtoon(load, 2, 0, 0, 10, 25, 25, 0, 8, 16, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Bounds().Size() != image.Pt(200, 400) || small.Bounds().Size() != image.Pt(25, 50) {
+		t.Fatalf("frames %v and %v", full.Bounds(), small.Bounds())
+	}
+	if page != fullPage || math.Abs(offset-fullOffset) > 1e-9 || math.Abs(offset-0.4) > 1e-9 {
+		t.Fatalf("position = page %d offset %.3f, full frame page %d offset %.3f", page, offset, fullPage, fullOffset)
+	}
+	// The narrow page keeps a fifth of the width; the wide one fills it.
+	assertPixel(t, small, 12, 10, red)
+	assertPixel(t, small, 5, 10, color.RGBA{})
+	assertPixel(t, small, 12, 40, blue)
+	assertPixel(t, full, 100, 80, red)
+	assertPixel(t, full, 40, 80, color.RGBA{})
 }
 
 func solidPage(width, height int, c color.Color) image.Image {

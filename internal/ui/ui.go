@@ -1601,8 +1601,12 @@ func (m *Model) renderPane(i int) tea.Cmd {
 				if inverted {
 					invertPage = b.CanInvertPage
 				}
+				unit := 1.0
+				if r.Name() == "halfblock" {
+					unit = cw // a half-block cell shows one pixel across; compose no finer
+				}
 				var frame *image.RGBA
-				frame, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch, invertPage)
+				frame, outPage, outOffset, err = render.ComposeWebtoon(load, b.Len(), pg, offset, scroll, cols, rows, rot, cw, ch, unit, invertPage)
 				if err == nil {
 					img, owned = frame, append(owned, frame)
 				}
