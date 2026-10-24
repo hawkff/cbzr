@@ -512,6 +512,12 @@ func TestPaneRemapRejectsOldRender(t *testing.T) {
 	}
 }
 
+func TestScreenshotNamesKeepEveryScript(t *testing.T) {
+	if got := sanitize("Война и мир: том 1 / 漫画?"); got != "Война_и_мир_том_1__漫画" {
+		t.Fatalf("sanitize = %q", got)
+	}
+}
+
 func TestSafeTextRemovesArchiveControls(t *testing.T) {
 	if got := safeText("title\x1b]2;spoof\a\x1b[31mred\x1b[0m\n\t"); got != "titlered" {
 		t.Fatalf("safe text = %q", got)

@@ -1326,18 +1326,24 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 		if err != nil {
 			return shotMsg{err: err}
 		}
-		defer f.Close()
 		if err := png.Encode(f, img); err != nil {
+			f.Close()
+			return shotMsg{err: err}
+		}
+		// Network file systems may report a failed write only here.
+		if err := f.Close(); err != nil {
 			return shotMsg{err: err}
 		}
 		return shotMsg{path: path}
 	}
 }
 
+// sanitize keeps letters and digits of any script, so screenshots of books
+// with Cyrillic or Japanese titles get distinct names.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_':
 			return r
 		case r == ' ':
 			return '_'
