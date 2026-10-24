@@ -14,7 +14,6 @@ import (
 	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 
 	"cbzr/internal/book"
 	"cbzr/internal/bookmarks"
@@ -107,7 +106,7 @@ func main() {
 	for {
 		srv.SetBooks(m.Books())
 		// All-motion reporting feeds the link hover in the status bar.
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFPS(120), tea.WithFilter(ui.FilterMouse), tea.WithOutput(terminalOutput{os.Stdout}))
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFPS(120), tea.WithFilter(ui.FilterMouse), tea.WithOutput(m.Output(os.Stdout)))
 		final, err := p.Run()
 		// Free terminal-side images after the program released the tty.
 		for id := uint32(1); id <= 6; id++ {
@@ -152,23 +151,6 @@ func main() {
 		closeBooks(fm)
 		return
 	}
-}
-
-// terminalOutput keeps the terminal from painting a partial frame. Embedding
-// the file preserves the descriptor Bubble Tea uses for resize detection.
-// The terminal holds the frame until the closing mode switch, so the frame
-// goes out in three writes instead of a megabyte-sized copy.
-type terminalOutput struct{ *os.File }
-
-func (w terminalOutput) Write(p []byte) (int, error) {
-	if _, err := w.File.WriteString(ansi.SetModeSynchronizedOutput); err != nil {
-		return 0, err
-	}
-	n, err := w.File.Write(p)
-	if _, endErr := w.File.WriteString(ansi.ResetModeSynchronizedOutput); err == nil {
-		err = endErr
-	}
-	return n, err
 }
 
 func checkBooks(paths []string, stdout, stderr io.Writer) int {

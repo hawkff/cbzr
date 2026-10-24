@@ -131,6 +131,7 @@ type Model struct {
 	pressX, pressY int
 	hover          string // destination of the link under the mouse
 	clip           []byte // pending OSC 52 clipboard write
+	uploads        *uploads
 	clipGen        int
 	actionGen      int // discard deferred text actions after newer input
 }
@@ -178,6 +179,7 @@ func New(r render.Renderer, srv *server.Server, marks *bookmarks.Store, position
 		openBrowser:     openBrowser,
 		nativeAvailable: nativeAvailable,
 		ocrText:         map[string]string{},
+		uploads:         newUploads(),
 	}
 	resumeWebtoon := false
 	for i, path := range paths {
@@ -1725,8 +1727,13 @@ func (m Model) View() string {
 	}
 	// Keep image uploads on a body row, separate from changing titles and
 	// clipboard writes. Retain them for repaints after menus and coalesced
-	// frames. They can take megabytes and View runs on every message, so the
-	// frame copies them once.
+	// frames. They travel as markers that Output replaces.
+	m.uploads.begin()
+	var uploads []byte
+	for i := 0; i < m.paneCount(); i++ {
+		uploads = m.uploads.appendMarker(uploads, m.panes[i].res.Transmit)
+		uploads = m.uploads.appendMarker(uploads, m.panes[i].res2.Transmit)
+	}
 	row, clipRow := 0, 0
 	if !m.zen && len(lines) > 1 {
 		row = 1
@@ -1738,10 +1745,7 @@ func (m Model) View() string {
 	if !m.zen || m.mode == modeSearch {
 		status = "\n" + m.statusView()
 	}
-	size := len(m.clip) + len(lines) + len(status)
-	for i := 0; i < m.paneCount(); i++ {
-		size += len(m.panes[i].res.Transmit) + len(m.panes[i].res2.Transmit)
-	}
+	size := len(m.clip) + len(uploads) + len(lines) + len(status)
 	for _, line := range lines {
 		size += len(line)
 	}
@@ -1755,10 +1759,7 @@ func (m Model) View() string {
 			frame.Write(m.clip)
 		}
 		if r == row {
-			for i := 0; i < m.paneCount(); i++ {
-				frame.Write(m.panes[i].res.Transmit)
-				frame.Write(m.panes[i].res2.Transmit)
-			}
+			frame.Write(uploads)
 		}
 		frame.WriteString(line)
 	}

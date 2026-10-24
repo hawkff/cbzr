@@ -256,7 +256,7 @@ func testBookPath(t *testing.T, metadata ...string) string {
 func testModel() Model {
 	return Model{panes: [2]*pane{newPane(), newPane()}, width: 80, height: 24,
 		marks: &bookmarks.Store{}, progress: &progress.Store{}, srv: new(server.Server),
-		renderer: render.NewHalfBlock(), ocrText: make(map[string]string)}
+		renderer: render.NewHalfBlock(), ocrText: make(map[string]string), uploads: newUploads()}
 }
 
 func TestOverlayKeepsKittyTransmission(t *testing.T) {
@@ -271,7 +271,7 @@ func TestOverlayKeepsKittyTransmission(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
-	if !strings.Contains(m.View(), "payload") {
+	if !strings.Contains(written(t, m), "payload") {
 		t.Fatal("overlay lost unpainted transmission")
 	}
 }
