@@ -9,13 +9,29 @@ import (
 	"io"
 )
 
-// ppmMIME is the type the page pipeline sees for converter output. Browsers
-// do not display it; PageBytes converts it to PNG.
+// ppmMIME is the type the page pipeline sees for converter output and text
+// pages. Browsers do not display it; PageBytes converts it to PNG.
 const ppmMIME = "image/x-portable-pixmap"
 
-// pdftoppm and ddjvu write binary PPM, which decodes in one pass. PNG would
-// cost a compression round trip on every page turn.
+// pdftoppm, ddjvu and the text layout write binary PPM, which decodes in one
+// pass. PNG would cost a compression round trip on every page turn.
 func init() { image.RegisterFormat("x-portable-pixmap", "P6", decodePPM, decodePPMConfig) }
+
+// encodePPM writes the RGB channels of an opaque image as binary PPM.
+func encodePPM(img *image.RGBA) []byte {
+	b := img.Bounds()
+	header := fmt.Sprintf("P6\n%d %d\n255\n", b.Dx(), b.Dy())
+	out := make([]byte, len(header)+3*b.Dx()*b.Dy())
+	n := copy(out, header)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := img.Pix[img.PixOffset(b.Min.X, y):][:4*b.Dx()]
+		for x := 0; x < len(row); x += 4 {
+			out[n], out[n+1], out[n+2] = row[x], row[x+1], row[x+2]
+			n += 3
+		}
+	}
+	return out
+}
 
 func ppmHeader(r *bufio.Reader) (w, h int, err error) {
 	var magic string
