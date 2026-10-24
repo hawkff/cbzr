@@ -31,6 +31,9 @@ jobs:
       - name: Install Poppler for native PDF link tests
         if: runner.os == 'macOS' && matrix.cgo == '1'
         run: HOMEBREW_NO_AUTO_UPDATE=1 brew install poppler
+      - name: Check formatting
+        if: runner.os == 'Linux' && matrix.cgo == '0'
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: Test
         run: go test ./...
       - name: Vet
@@ -81,10 +84,10 @@ jobs:
           path: dist/cbzr-*
           if-no-files-found: error
           retention-days: 7
-      - name: Compile declared BSD targets
+      - name: Compile declared BSD and Windows targets
         if: runner.os == 'Linux' && matrix.cgo == '0'
         shell: bash
         run: |
-          for target in freebsd netbsd openbsd dragonfly; do
+          for target in freebsd netbsd openbsd dragonfly windows; do
             CGO_ENABLED=0 GOOS="$target" GOARCH=amd64 go build ./...
           done

@@ -57,9 +57,9 @@ tmux 3.3+ with passthrough, and as plain text in other terminals (webtoon
 mode needs the kitty renderer). PDF and DJVU pages render through pdftoppm
 and ddjvu on access. e opens the browser reader, f the native macOS window.
 
-Positions and bookmarks live in the user config dir (~/.config/cbzr on
-Linux, ~/Library/Application Support/cbzr on macOS). Press ? in the reader
-for the key list.
+Positions and bookmarks live in the user config dir ($XDG_CONFIG_HOME/cbzr,
+by default ~/.config/cbzr, on Linux; ~/Library/Application Support/cbzr on
+macOS). Press ? in the reader for the key list.
 `
 
 func main() {
@@ -83,6 +83,10 @@ func main() {
 		return
 	}
 
+	if backend != "" && backend != "kitty" && backend != "halfblock" {
+		fmt.Fprintf(os.Stderr, "cbzr: unknown renderer %q (kitty or halfblock)\n", backend)
+		os.Exit(2)
+	}
 	paths := flag.Args()
 	if check {
 		os.Exit(checkBooks(paths, os.Stdout, os.Stderr))
