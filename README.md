@@ -13,6 +13,26 @@ terminal.
   [DjVuLibre](https://djvu.sourceforge.net/) (`djvused`, `ddjvu`) for DJVU and
   `antiword` for DOC. Comics, EPUB, FB2 and DOCX need no external tools.
 
+## Linux
+
+On Linux, use the terminal or browser reader. The native fullscreen window
+requires macOS. Build without cgo:
+
+```sh
+CGO_ENABLED=0 go build -o cbzr .
+./cbzr book.cbz
+```
+
+On Debian 13, install the optional document converters, OCR engine and browser
+launcher with:
+
+```sh
+sudo apt install poppler-utils djvulibre-bin antiword tesseract-ocr xdg-utils
+```
+
+Comics, EPUB, FB2 and DOCX work without these packages. Use Kitty or Ghostty
+for pixel graphics; other truecolor terminals use the half-block renderer.
+
 ## Formats
 
 - cbzr reads .cbz/.zip and .cbr/.rar archives. It detects every format from

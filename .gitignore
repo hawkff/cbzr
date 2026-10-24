@@ -3,18 +3,13 @@
 ._*
 __MACOSX/
 
-#IDE
-.agents/
+# Editor files
 .cursor
-AGENTS.md
 
-#folders
-/docs/
+# Build output
 /dist/
-.pi-subagents/
 
-# Local runtime and credentials
-.pi/
+# Credentials
 .env
 .env.*
 !.env.example

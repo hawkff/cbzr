@@ -1,5 +1,5 @@
 # Build/check container for cbzr. Used with:
-#   nsc build --build-arg VERSION=0.2.0 --output-local=dist .
+#   docker buildx build --build-arg VERSION=0.2.0 --output type=local,dest=dist .
 FROM golang:1.26 AS build
 ARG VERSION=dev
 WORKDIR /src
