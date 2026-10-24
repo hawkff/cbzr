@@ -1688,27 +1688,46 @@ func (m Model) View() string {
 		}
 	}
 	// Keep image uploads on a body row, separate from changing titles and
-	// clipboard writes. Retain them for repaints after menus and coalesced frames.
-	var oob strings.Builder
-	for i := 0; i < m.paneCount(); i++ {
-		oob.Write(m.panes[i].res.Transmit)
-		oob.Write(m.panes[i].res2.Transmit)
-	}
-	row := 0
+	// clipboard writes. Retain them for repaints after menus and coalesced
+	// frames. They can take megabytes and View runs on every message, so the
+	// frame copies them once.
+	row, clipRow := 0, 0
 	if !m.zen && len(lines) > 1 {
 		row = 1
 	}
-	lines[row] = oob.String() + lines[row]
-	clipRow := 0
 	if m.zen {
 		clipRow = len(lines) - 1
 	}
-	lines[clipRow] = string(m.clip) + lines[clipRow]
-	body := strings.Join(lines, "\n")
-	if m.zen && m.mode != modeSearch {
-		return body
+	status := ""
+	if !m.zen || m.mode == modeSearch {
+		status = "\n" + m.statusView()
 	}
-	return body + "\n" + m.statusView()
+	size := len(m.clip) + len(lines) + len(status)
+	for i := 0; i < m.paneCount(); i++ {
+		size += len(m.panes[i].res.Transmit) + len(m.panes[i].res2.Transmit)
+	}
+	for _, line := range lines {
+		size += len(line)
+	}
+	var frame strings.Builder
+	frame.Grow(size)
+	for r, line := range lines {
+		if r > 0 {
+			frame.WriteByte('\n')
+		}
+		if r == clipRow {
+			frame.Write(m.clip)
+		}
+		if r == row {
+			for i := 0; i < m.paneCount(); i++ {
+				frame.Write(m.panes[i].res.Transmit)
+				frame.Write(m.panes[i].res2.Transmit)
+			}
+		}
+		frame.WriteString(line)
+	}
+	frame.WriteString(status)
+	return frame.String()
 }
 
 // centerCells centers a block of lines, each exactly cols terminal cells
