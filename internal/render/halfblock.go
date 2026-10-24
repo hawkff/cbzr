@@ -75,18 +75,3 @@ func appendColor(b []byte, prefix string, c [3]byte) []byte {
 }
 
 func (h *HalfBlock) Delete(uint32) []byte { return nil }
-
-// Detect picks the best renderer for the current terminal, like yazi probes
-// TERM/TERM_PROGRAM before choosing an adapter.
-func Detect(force string) Renderer {
-	switch force {
-	case "kitty":
-		return NewKitty()
-	case "halfblock":
-		return NewHalfBlock()
-	}
-	if supportsKitty() {
-		return NewKitty()
-	}
-	return NewHalfBlock()
-}

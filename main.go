@@ -39,7 +39,8 @@ formats: .cbz/.zip, .cbr/.rar, .epub, .fb2/.fb2.zip, .docx (built in);
          the format is detected by signature
 
 flags:
-  -r, -renderer kitty|halfblock   force a renderer (default: detect)
+  -r, -renderer kitty|sixel|halfblock
+                                  force a renderer (default: detect)
   -c, -check                      index books and lay out text without opening
                                   a reader; images decode on page access
   -v, -version                    print the version and exit
@@ -51,10 +52,12 @@ environment:
   CBZR_EPUB_FALLBACK_FONT   TTF/OTF/TTC with glyphs the bundled fonts lack;
                             replaces the system font search
 
-EPUB, FB2, DOCX and DOC text renders as page images in Kitty, Ghostty and
-tmux 3.3+ with passthrough, and as plain text in other terminals (webtoon
-mode needs the kitty renderer). PDF and DJVU pages render through pdftoppm
-and ddjvu on access. e opens the browser reader, f the native macOS window.
+Pages show as pixels through kitty graphics in Kitty, Ghostty and tmux 3.3+
+with passthrough, and through sixel graphics in foot, WezTerm, Konsole,
+xterm and mlterm. Other terminals get half blocks, which show EPUB, FB2,
+DOCX and DOC text as plain text (webtoon mode then needs pixels). PDF and
+DJVU pages render through pdftoppm and ddjvu on access. e opens the browser
+reader, f the native macOS window.
 
 Positions and bookmarks live in the user config dir ($XDG_CONFIG_HOME/cbzr,
 by default ~/.config/cbzr, on Linux; ~/Library/Application Support/cbzr on
@@ -82,8 +85,8 @@ func main() {
 		return
 	}
 
-	if backend != "" && backend != "kitty" && backend != "halfblock" {
-		fmt.Fprintf(os.Stderr, "cbzr: unknown renderer %q (kitty or halfblock)\n", backend)
+	if backend != "" && backend != "kitty" && backend != "sixel" && backend != "halfblock" {
+		fmt.Fprintf(os.Stderr, "cbzr: unknown renderer %q (kitty, sixel or halfblock)\n", backend)
 		os.Exit(2)
 	}
 	paths := flag.Args()
@@ -95,8 +98,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	render.QueryCellSize() // must run before bubbletea owns the tty
-	r := render.Detect(backend)
+	r := render.Detect(backend) // probes the tty, so it runs before Bubble Tea owns it
 	srv := new(server.Server)
 	defer srv.Close() //nolint:errcheck
 

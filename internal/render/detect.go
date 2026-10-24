@@ -48,3 +48,21 @@ func termSuggestsKitty(term, prog string) bool {
 		strings.Contains(term, "ghostty") ||
 		prog == "ghostty"
 }
+
+// Detect probes the terminal and picks a renderer: kitty graphics where the
+// terminal speaks them, sixel where its device attributes list it, half
+// blocks elsewhere. force names a renderer to use instead. Detect must run
+// before the TUI owns the terminal.
+func Detect(force string) Renderer {
+	// Half blocks need the cell size only for its proportions.
+	if _, _, ok := ioctlCellSize(); force != "halfblock" || !ok {
+		probe(force == "sixel")
+	}
+	switch {
+	case force == "kitty" || force == "" && supportsKitty():
+		return NewKitty()
+	case force == "sixel" || force == "" && terminal.sixel:
+		return NewSixel()
+	}
+	return NewHalfBlock()
+}

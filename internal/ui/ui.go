@@ -340,6 +340,11 @@ func (m Model) imgBox(i int) (cols, rows int) {
 		w = (w - 1) / 2
 	}
 	if m.zen {
+		// A sixel image on the bottom row would scroll the screen when the
+		// terminal moves the cursor below it.
+		if h == m.height && m.renderer != nil && m.renderer.Name() == "sixel" {
+			h--
+		}
 		return max(1, w), max(1, h)
 	}
 	return max(1, w-2), max(1, h-2)
@@ -1567,9 +1572,9 @@ func (m *Model) renderPane(i int) tea.Cmd {
 	webtoon := m.webtoon
 	load := func(pg int) (image.Image, error) {
 		if r.Name() == "halfblock" && b.IsTextPage(pg) {
-			hint := "t to leave webtoon, e for browser, or -renderer=kitty in Kitty/Ghostty"
+			hint := "t to leave webtoon, e for browser, or a terminal with kitty or sixel graphics"
 			if m.nativeAvailable {
-				hint = "t to leave webtoon, e for browser, f for native, or -renderer=kitty in Kitty/Ghostty"
+				hint = "t to leave webtoon, e for browser, f for native, or a terminal with kitty or sixel graphics"
 			}
 			return nil, fmt.Errorf("text pages in webtoon need pixel rendering: %s", hint)
 		}
@@ -1735,8 +1740,20 @@ func (m Model) View() string {
 	m.uploads.begin()
 	var uploads []byte
 	for i := 0; i < m.paneCount(); i++ {
-		uploads = m.uploads.appendMarker(uploads, m.panes[i].res.Transmit)
-		uploads = m.uploads.appendMarker(uploads, m.panes[i].res2.Transmit)
+		for slot, res := range []render.Result{m.panes[i].res, m.panes[i].res2} {
+			if !res.Paint {
+				uploads = m.uploads.appendMarker(uploads, res.Transmit)
+				continue
+			}
+			// Every row a sixel image covers names it, so the writer draws
+			// it again whenever Bubble Tea rewrites one of those rows.
+			if r, ok := m.shownRect(i, slot); slot < m.slotCount() && ok {
+				marker := string(m.uploads.appendPaint(nil, res.Transmit, r.Min))
+				for y := r.Min.Y; y < r.Max.Y && y < len(lines); y++ {
+					lines[y] = marker + lines[y]
+				}
+			}
+		}
 	}
 	row, clipRow := 0, 0
 	if !m.zen && len(lines) > 1 {
@@ -1926,7 +1943,7 @@ func (m Model) statusView() string {
 
 func (m Model) helpView() string {
 	help := `cbzr: terminal reader (.cbz/.cbr/.epub/.fb2/.docx/.doc/.pdf/.djvu)
-Book text: images in Kitty/Ghostty, plain text elsewhere (webtoon needs Kitty/Ghostty).
+Book text: images with kitty or sixel graphics, plain text elsewhere (webtoon needs images).
 
   j / k          next / prev page or spread (webtoon: one viewport; 2j for two)
   J / K          next / prev page or spread (webtoon: half a viewport)
