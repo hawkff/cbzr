@@ -13,7 +13,7 @@ func TestSupportsKittyIgnoresInheritedMarkers(t *testing.T) {
 		{"kitty with a plain TERM", map[string]string{"TERM": "xterm-256color", "KITTY_WINDOW_ID": "1"}, true},
 		{"VS Code started from kitty", map[string]string{"TERM": "xterm-256color", "TERM_PROGRAM": "vscode", "KITTY_WINDOW_ID": "1"}, false},
 		{"zellij in kitty", map[string]string{"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1", "ZELLIJ": "0"}, false},
-		{"screen in Ghostty", map[string]string{"TERM": "screen", "GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty", "STY": "1.pts-0"}, false},
+		{"screen in Ghostty", map[string]string{"TERM": "screen", "TERM_PROGRAM": "ghostty", "GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty", "STY": "1.pts-0"}, false},
 		{"kitty started from screen", map[string]string{"TERM": "xterm-kitty", "STY": "1.pts-0"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

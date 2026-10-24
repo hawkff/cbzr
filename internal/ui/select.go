@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -326,14 +327,26 @@ func (m Model) copyText(text, status string) (tea.Model, tea.Cmd) {
 	gen := m.clipGen
 	return m, tea.Batch(
 		tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return clipDoneMsg{gen} }),
-		func() tea.Msg { copyLocally(text); return nil },
+		func() tea.Msg { copyLocally(gen, text); return nil },
 	)
+}
+
+// localCopy runs the clipboard tools one copy at a time, newest last.
+var localCopy struct {
+	sync.Mutex
+	gen int
 }
 
 // copyLocally also hands text to local clipboard tools: tmux drops OSC 52
 // under its default set-clipboard, and macOS Terminal and VTE terminals such
 // as GNOME Terminal ignore it. Missing tools fail silently.
-func copyLocally(text string) {
+func copyLocally(gen int, text string) {
+	localCopy.Lock()
+	defer localCopy.Unlock()
+	if gen < localCopy.gen {
+		return // a newer copy already reached the clipboard
+	}
+	localCopy.gen = gen
 	run := func(tool ...string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

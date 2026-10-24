@@ -16,13 +16,17 @@ func supportsKitty() bool {
 		return false
 	}
 	prog := os.Getenv("TERM_PROGRAM")
+	if os.Getenv("STY") != "" {
+		// GNU screen keeps the outer TERM_PROGRAM; only its own TERM counts.
+		prog = "screen"
+	}
 	if termSuggestsKitty(os.Getenv("TERM"), prog) {
 		return true
 	}
-	// Markers inherited from the outer terminal, visible inside tmux too. GNU
-	// screen and terminals started from kitty, such as VS Code's, inherit them
-	// as well; screen sets STY and the others name themselves in TERM_PROGRAM.
-	if os.Getenv("STY") == "" && (prog == "" || prog == "tmux") {
+	// Markers inherited from the outer terminal, visible inside tmux too.
+	// Terminals started from kitty, such as VS Code's, inherit them as well but
+	// name themselves in TERM_PROGRAM.
+	if prog == "" || prog == "tmux" {
 		for _, v := range []string{"KITTY_WINDOW_ID", "KITTY_PID", "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR"} {
 			if os.Getenv(v) != "" {
 				return true

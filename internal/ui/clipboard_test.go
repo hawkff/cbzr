@@ -13,6 +13,7 @@ func TestCopyReachesLocalClipboardTools(t *testing.T) {
 	if err != nil {
 		t.Skip("clipboard helpers need sh")
 	}
+	localCopy.gen = 0
 	dir := t.TempDir()
 	log := filepath.Join(dir, "log")
 	t.Setenv("CBZR_TEST_CLIPBOARD", log)
@@ -26,7 +27,7 @@ func TestCopyReachesLocalClipboardTools(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,1,0")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("DISPLAY", ":0")
-	copyLocally("copied text")
+	copyLocally(1, "copied text")
 	want := "tmux load-buffer -w -:copied text\nwl-copy :copied text\n"
 	if runtime.GOOS == "darwin" {
 		want = "tmux load-buffer -w -:copied text\npbcopy :copied text\n"
@@ -42,7 +43,7 @@ func TestCopyReachesLocalClipboardTools(t *testing.T) {
 		if err := os.Remove(log); err != nil {
 			t.Fatal(err)
 		}
-		copyLocally("fallback")
+		copyLocally(2, "fallback")
 		want = "tmux load-buffer -w -:fallback\nxclip -selection clipboard:fallback\n"
 		if got, err := os.ReadFile(log); err != nil || string(got) != want {
 			t.Fatalf("fallback got %q, %v", got, err)
@@ -55,8 +56,15 @@ func TestCopyReachesLocalClipboardTools(t *testing.T) {
 	for _, v := range []string{"TMUX", "WAYLAND_DISPLAY", "DISPLAY"} {
 		t.Setenv(v, "")
 	}
-	copyLocally("ignored")
+	copyLocally(3, "ignored")
 	if _, err := os.Stat(log); runtime.GOOS != "darwin" && !os.IsNotExist(err) {
 		t.Fatal("a session without a display ran a clipboard tool")
+	}
+	// A copy that starts late cannot replace a newer one.
+	os.Remove(log) //nolint:errcheck
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+	copyLocally(2, "stale")
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Fatal("an older copy ran after a newer one")
 	}
 }
