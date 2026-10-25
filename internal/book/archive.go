@@ -85,11 +85,13 @@ func (a *zipArchive) Close() error     { return a.rc.Close() }
 type rarArchive struct {
 	path    string
 	entries []entry
+	budget  int64 // bytes one pass of the solid reader may decode
 
-	mu     sync.Mutex
-	solid  *rardecode.ReadCloser
-	next   int         // archive index of the file the solid reader returns next
-	closed atomic.Bool // stops a long decode without waiting for it
+	mu      sync.Mutex
+	solid   *rardecode.ReadCloser
+	next    int         // archive index of the file the solid reader returns next
+	decoded int64       // bytes the solid reader decoded since it opened
+	closed  atomic.Bool // stops a long decode without waiting for it
 }
 
 type rarEntry struct {
@@ -114,7 +116,15 @@ func openRar(path string) (archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &rarArchive{path: path}
+	// Pages barely compress, so a solid stream that decodes to a hundred
+	// times its packed size, beyond 1 GiB, is junk built to burn CPU, and
+	// one pass stops there. A large file before a page, such as a bonus
+	// video, still lets the reader through.
+	var packed int64
+	for _, f := range files {
+		packed += f.PackedSize
+	}
+	a := &rarArchive{path: path, budget: max(1<<30, 100*packed)}
 	for i, f := range files {
 		if f.IsDir {
 			continue
@@ -123,10 +133,6 @@ func openRar(path string) (archive, error) {
 	}
 	return a, nil
 }
-
-// maxSkipBytes caps each file a solid page decodes on its way, so a small
-// archive cannot hide gigabytes of junk before its pages. Tests lower it.
-var maxSkipBytes int64 = maxPageBytes
 
 // openSolid decodes up to the entry and returns its bytes. When ctx ends,
 // the reader keeps its place, and the next page continues from there.
@@ -151,20 +157,15 @@ func (a *rarArchive) openSolid(ctx context.Context, e rarEntry) (io.ReadCloser, 
 		if err != nil {
 			return nil, err
 		}
-		a.solid, a.next = rc, 0
+		a.solid, a.next, a.decoded = rc, 0, 0
 	}
 	r := solidReader{a, ctx}
 	for a.next <= e.index {
 		var err error
 		if a.next > 0 {
-			// Decode the rest of the current file here, where Close and ctx
-			// can stop it; Next would decode it without checking.
-			switch _, err = io.CopyN(io.Discard, r, maxSkipBytes+1); err {
-			case io.EOF:
-				err = nil
-			case nil:
-				err = fmt.Errorf("a file before %q exceeds %d bytes", e.f.Name, maxSkipBytes)
-			}
+			// Decode the rest of the current file here, where Close, ctx and
+			// the budget can stop it; Next would decode it without checking.
+			_, err = io.Copy(io.Discard, r)
 		}
 		var h *rardecode.FileHeader
 		if err == nil {
@@ -185,8 +186,8 @@ func (a *rarArchive) openSolid(ctx context.Context, e rarEntry) (io.ReadCloser, 
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-// solidReader reads the current solid file until the archive closes or the
-// request ends.
+// solidReader reads the current solid file until the archive closes, the
+// request ends or the pass decodes past its budget. It requires a.mu.
 type solidReader struct {
 	a   *rarArchive
 	ctx context.Context
@@ -199,7 +200,11 @@ func (r solidReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
 	}
-	return r.a.solid.Read(p)
+	n, err := r.a.solid.Read(p)
+	if r.a.decoded += int64(n); r.a.decoded > r.a.budget {
+		return n, fmt.Errorf("RAR archive expands past %d MiB", r.a.budget>>20)
+	}
+	return n, err
 }
 
 // closeSolid requires a.mu.

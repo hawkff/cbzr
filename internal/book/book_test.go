@@ -177,7 +177,7 @@ func (c *endsAfter) Err() error {
 	return nil
 }
 
-func TestSolidRARStopsAndLimitsSkippedFiles(t *testing.T) {
+func TestSolidRARStopsAndBoundsDecoding(t *testing.T) {
 	b, err := Open("testdata/solid.cbr")
 	if err != nil {
 		t.Fatal(err)
@@ -199,11 +199,23 @@ func TestSolidRARStopsAndLimitsSkippedFiles(t *testing.T) {
 	if got, err := readEntry(last, maxPageBytes); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("continued request: %v", err)
 	}
-	// Files before a page obey the page limit too.
-	defer func(limit int64) { maxSkipBytes = limit }(maxSkipBytes)
-	maxSkipBytes = 10
-	if _, err := readEntry(b.pages[1], maxPageBytes); err == nil || !strings.Contains(err.Error(), "exceeds 10 bytes") {
-		t.Fatalf("oversized skipped file: %v", err)
+	// One pass may decode every file before a page, however large each one
+	// is, until the archive's budget runs out.
+	var size int64
+	for _, p := range b.pages {
+		data, err := readEntry(p, maxPageBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += int64(len(data))
+	}
+	last.a.budget = size
+	if _, err := readEntry(last, maxPageBytes); err != nil {
+		t.Fatalf("page within the budget: %v", err)
+	}
+	last.a.budget = size - 1
+	if _, err := readEntry(last, maxPageBytes); err == nil || !strings.Contains(err.Error(), "expands past") {
+		t.Fatalf("page past the budget: %v", err)
 	}
 }
 
