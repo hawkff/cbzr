@@ -275,6 +275,9 @@ func TestRARCloseDoesNotWaitForTheDecoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := readEntry(b.pages[2], maxPageBytes); err != nil {
+		t.Fatal(err)
+	}
 	a := b.arc.(*rarArchive)
 	a.mu.Lock() // a decode inside Next, which no check can stop
 	done := make(chan error, 1)
@@ -288,6 +291,18 @@ func TestRARCloseDoesNotWaitForTheDecoder(t *testing.T) {
 		t.Fatal("Close waited for the decoder")
 	}
 	a.mu.Unlock()
+	// The reader closes once the decoder lets go of it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		a.mu.Lock()
+		open := a.solid != nil
+		a.mu.Unlock()
+		if !open {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the solid reader stayed open")
+		}
+	}
 	if _, err := readEntry(b.pages[2], maxPageBytes); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("read after close: %v", err)
 	}
