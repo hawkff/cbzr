@@ -116,15 +116,16 @@ func openRar(path string) (archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Pages barely compress, so a solid stream that decodes to a hundred
-	// times its packed size, beyond 1 GiB, is junk built to burn CPU, and
-	// one pass stops there. A large file before a page, such as a bonus
-	// video, still lets the reader through.
-	var packed int64
-	for _, f := range files {
-		packed += f.PackedSize
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
 	}
-	a := &rarArchive{path: path, budget: max(1<<30, 100*packed)}
+	// Pages barely compress, so a solid stream that decodes to a hundred
+	// times the archive's size, beyond 1 GiB, is junk built to burn CPU, and
+	// one pass stops there. The size on disk counts, not the headers, which
+	// the archive could inflate. A large file before a page, such as a bonus
+	// video, still lets the reader through.
+	a := &rarArchive{path: path, budget: max(1<<30, 100*info.Size())}
 	for i, f := range files {
 		if f.IsDir {
 			continue
@@ -146,8 +147,11 @@ func (a *rarArchive) openSolid(ctx context.Context, e rarEntry) (io.ReadCloser, 
 		return nil, err // ended while an earlier page held the reader
 	}
 	fail := func(err error) (io.ReadCloser, error) {
-		if ctx.Err() == nil {
-			a.closeSolid() // only a canceled decode stops at a known place
+		// A canceled read stops between decoder calls, where the next request
+		// continues. After any other error, even one that comes while the
+		// request ends, the decoder may be broken, so start over.
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			a.closeSolid()
 		}
 		return nil, err
 	}

@@ -177,28 +177,99 @@ func (c *endsAfter) Err() error {
 	return nil
 }
 
-func TestSolidRARStopsAndBoundsDecoding(t *testing.T) {
+// stopsAfter is a context that ends once the solid reader has decoded more
+// than after bytes.
+type stopsAfter struct {
+	context.Context
+	a     *rarArchive
+	after int64
+}
+
+func (c stopsAfter) Err() error {
+	if c.a.decoded > c.after {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestSolidRARResumesCanceledDecodes(t *testing.T) {
+	// Three 64x64 BMPs, each larger than one read of the decoder.
+	const path = "testdata/solid-bmp.cbr"
+	open := func() (*Book, rarEntry, rarEntry) {
+		b, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { b.Close() })
+		if b.Len() != 3 || !b.pages[1].(rarEntry).f.Solid {
+			t.Fatalf("%d pages; the fixture needs solid files after the first", b.Len())
+		}
+		return b, b.pages[1].(rarEntry), b.pages[2].(rarEntry)
+	}
+	ref, _, _ := open()
+	var want [3][]byte
+	for i := range want {
+		var err error
+		if want[i], err = readEntry(ref.pages[i], maxPageBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	size := int64(len(want[0]))
+
+	// Stopped partway through the first file, the reader keeps its place,
+	// and a later page continues from there.
+	_, _, last := open()
+	a := last.a
+	if _, err := last.openContext(stopsAfter{context.Background(), a, 0}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stopped request: %v", err)
+	}
+	if a.solid == nil || a.next != 1 || a.decoded == 0 || a.decoded >= size {
+		t.Fatalf("stopped at file %d after %d bytes", a.next, a.decoded)
+	}
+	if got, err := readEntry(last, maxPageBytes); err != nil || !bytes.Equal(got, want[2]) {
+		t.Fatalf("continued request: %v", err)
+	}
+
+	// A page stopped partway starts over when asked for again, and the page
+	// after it continues.
+	_, second, last := open()
+	a = second.a
+	if _, err := second.openContext(stopsAfter{context.Background(), a, size}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stopped page: %v", err)
+	}
+	if a.solid == nil || a.next != 2 || a.decoded <= size || a.decoded >= 2*size {
+		t.Fatalf("stopped page left file %d after %d bytes", a.next, a.decoded)
+	}
+	for i, e := range []rarEntry{second, last} {
+		if got, err := readEntry(e, maxPageBytes); err != nil || !bytes.Equal(got, want[i+1]) {
+			t.Fatalf("page %d after the stop: %v", i+1, err)
+		}
+	}
+
+	// A decoder error that comes while the request ends still closes the
+	// reader: after some errors, rardecode cannot read on.
+	if _, err := readEntry(second, maxPageBytes); err != nil {
+		t.Fatal(err)
+	}
+	renamed := *last.f
+	renamed.Name = "other.bmp"
+	wrong := rarEntry{a, &renamed, last.index}
+	// One check on entry and one on the read that finds the second file
+	// ended; the third, after Next, reports the end.
+	if _, err := wrong.openContext(&endsAfter{Context: context.Background(), checks: 2}); err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("mismatched file: %v", err)
+	}
+	if a.solid != nil {
+		t.Fatal("a failed decode kept its reader")
+	}
+}
+
+func TestSolidRARBoundsDecoding(t *testing.T) {
 	b, err := Open("testdata/solid.cbr")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	last := b.pages[2].(rarEntry)
-	want, err := readEntry(last, maxPageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A request that ends while the first file decodes leaves the reader
-	// there, and the next request continues to the same bytes.
-	if _, err := last.openContext(&endsAfter{Context: context.Background(), checks: 1}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("ended request: %v", err)
-	}
-	if last.a.solid == nil || last.a.next != 1 {
-		t.Fatalf("ended request moved the reader to file %d", last.a.next)
-	}
-	if got, err := readEntry(last, maxPageBytes); err != nil || !bytes.Equal(got, want) {
-		t.Fatalf("continued request: %v", err)
-	}
 	// One pass may decode every file before a page, however large each one
 	// is, until the archive's budget runs out.
 	var size int64
@@ -209,6 +280,7 @@ func TestSolidRARStopsAndBoundsDecoding(t *testing.T) {
 		}
 		size += int64(len(data))
 	}
+	last := b.pages[2].(rarEntry)
 	last.a.budget = size
 	if _, err := readEntry(last, maxPageBytes); err != nil {
 		t.Fatalf("page within the budget: %v", err)
