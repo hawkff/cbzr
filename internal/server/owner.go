@@ -32,18 +32,16 @@ func (l ownerOnly) Accept() (net.Conn, error) {
 
 // peerUID looks up the owner of the client socket of a loopback connection in
 // /proc/net/tcp, or tcp6 for an IPv4-mapped client. ok is false where the
-// tables do not exist, as outside Linux, or lack the socket.
-func peerUID(c net.Conn) (int, bool) {
+// tables do not exist, as outside Linux, or lack the socket. Tests replace it.
+var peerUID = func(c net.Conn) (int, bool) {
 	local, lok := c.LocalAddr().(*net.TCPAddr)
 	remote, rok := c.RemoteAddr().(*net.TCPAddr)
 	if !lok || !rok || local.IP.To4() == nil || remote.IP.To4() == nil {
 		return 0, false
 	}
-	// tcp6 prints an IPv4-mapped address as four host-order words.
-	mapped := fmt.Sprintf("%016X%08X", 0, binary.NativeEndian.Uint32([]byte{0, 0, 0xff, 0xff}))
 	for _, table := range []struct{ path, prefix string }{
 		{"/proc/net/tcp", ""},
-		{"/proc/net/tcp6", mapped},
+		{"/proc/net/tcp6", mappedPrefix},
 	} {
 		data, err := os.ReadFile(table.path)
 		if err != nil {
@@ -55,6 +53,10 @@ func peerUID(c net.Conn) (int, bool) {
 	}
 	return 0, false
 }
+
+// mappedPrefix is the ::ffff: part of an IPv4-mapped address as tcp6 prints
+// it: four host-order words.
+var mappedPrefix = fmt.Sprintf("%016X%08X", 0, binary.NativeEndian.Uint32([]byte{0, 0, 0xff, 0xff}))
 
 // procAddr formats an IPv4 address and port the way /proc/net/tcp does:
 // the address as a host-order word, both in hex.
