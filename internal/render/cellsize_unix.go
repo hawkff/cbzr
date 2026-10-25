@@ -28,9 +28,10 @@ var terminal struct {
 // font changes, though, so a smaller size from it wins: sixel pixels map one
 // to one onto the screen, and cells taken too large push an image past its
 // rows.
-// shortcut: a font that grows after startup keeps the startup size, and so
-// does one that shrinks under a mux with whole-window geometry; fixing that
-// means asking XTWINOPS again and reading the reply through Bubble Tea.
+// shortcut: a font that grows keeps the startup size, and so does one that
+// shrinks where TIOCGWINSZ has no pixel sizes or a mux reports the whole
+// window; asking XTWINOPS again on resize, with the reply read through
+// Bubble Tea, would cover both.
 func CellSize() (cw, ch float64) {
 	icw, ich, ok := ioctlCellSize()
 	switch {
