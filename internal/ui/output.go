@@ -2,19 +2,26 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
+	"image"
 	"io"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
 // uploadMarker opens the APC sequence that stands in for a page upload in a
-// frame. Terminals ignore APC sequences they don't know, and Bubble Tea
+// frame, and paintMarker the one that names a sixel image on each row it
+// covers. Terminals ignore APC sequences they don't know, and Bubble Tea
 // measures them as zero width and keeps them when it truncates a line.
 const (
-	uploadMarker = "\x1b_cbzr:"
+	markerStart  = "\x1b_cbz"
+	uploadMarker = markerStart + "r:"
+	paintMarker  = markerStart + "p:"
 	markerEnd    = "\x1b\\"
 )
 
@@ -67,6 +74,13 @@ func (u *uploads) appendMarker(frame, data []byte) []byte {
 	if u == nil {
 		return append(frame, data...)
 	}
+	frame = append(frame, uploadMarker...)
+	frame = strconv.AppendUint(frame, u.register(data), 10)
+	return append(frame, markerEnd...)
+}
+
+// register returns the id of data for this frame.
+func (u *uploads) register(data []byte) uint64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	i := 0
@@ -78,8 +92,24 @@ func (u *uploads) appendMarker(frame, data []byte) []byte {
 		u.entries = append(u.entries, upload{data: data, id: u.next})
 	}
 	u.entries[i].view = u.views
-	frame = append(frame, uploadMarker...)
-	frame = strconv.AppendUint(frame, u.entries[i].id, 10)
+	return u.entries[i].id
+}
+
+// appendPaint appends the marker that names data, an image to draw with its
+// top left corner on cell at, to a frame row the image covers. Bubble Tea
+// writes only the rows that change; a written row erases the image under it,
+// so the writer draws every image a written row names. A nil table appends
+// nothing.
+func (u *uploads) appendPaint(frame, data []byte, at image.Point) []byte {
+	if u == nil || len(data) == 0 {
+		return frame
+	}
+	frame = append(frame, paintMarker...)
+	frame = strconv.AppendUint(frame, u.register(data), 10)
+	frame = append(frame, ';')
+	frame = strconv.AppendInt(frame, int64(at.Y), 10)
+	frame = append(frame, ';')
+	frame = strconv.AppendInt(frame, int64(at.X), 10)
 	return append(frame, markerEnd...)
 }
 
@@ -94,15 +124,17 @@ func (u *uploads) lookup(id uint64) []byte {
 	return nil
 }
 
-// write sends p to w with every marker replaced by its upload. A marker
-// whose upload is gone writes nothing.
+// write sends p to w with every upload marker replaced by its upload, then
+// draws each image that a paint marker in p names. A marker whose data is
+// gone writes nothing.
 func (u *uploads) write(w io.Writer, p []byte) (int, error) {
 	if u == nil {
 		return w.Write(p)
 	}
 	n := 0
+	var paints []string
 	for {
-		i := bytes.Index(p, []byte(uploadMarker))
+		i := bytes.Index(p, []byte(markerStart))
 		if i < 0 {
 			break
 		}
@@ -110,20 +142,53 @@ func (u *uploads) write(w io.Writer, p []byte) (int, error) {
 		if end < 0 {
 			break
 		}
-		id, _ := strconv.ParseUint(string(p[i+len(uploadMarker):i+end]), 10, 64)
+		marker := string(p[i : i+end])
 		k, err := w.Write(p[:i])
 		if err != nil {
 			return n + k, err
 		}
-		// Uploads never change after rendering, so the write needs no lock.
-		if _, err := w.Write(u.lookup(id)); err != nil {
-			return n + i, err
+		if id, ok := strings.CutPrefix(marker, uploadMarker); ok {
+			// Uploads never change after rendering, so the write needs no lock.
+			if _, err := w.Write(u.lookup(parseID(id))); err != nil {
+				return n + i, err
+			}
+		} else if strings.HasPrefix(marker, paintMarker) && !slices.Contains(paints, marker) {
+			paints = append(paints, marker)
 		}
 		n += i + end + len(markerEnd)
 		p = p[i+end+len(markerEnd):]
 	}
 	k, err := w.Write(p)
-	return n + k, err
+	if err != nil {
+		return n + k, err
+	}
+	n += k
+	for _, marker := range paints {
+		var id uint64
+		var row, col int
+		fmt.Sscanf(marker[len(paintMarker):], "%d;%d;%d", &id, &row, &col) //nolint:errcheck
+		data := u.lookup(id)
+		if data == nil {
+			continue
+		}
+		// Save the cursor, draw at the image's cell, and put the cursor back
+		// where Bubble Tea left it.
+		if _, err := fmt.Fprintf(w, "\x1b7\x1b[%d;%dH", row+1, col+1); err != nil {
+			return n, err
+		}
+		if _, err := w.Write(data); err != nil {
+			return n, err
+		}
+		if _, err := io.WriteString(w, "\x1b8"); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func parseID(s string) uint64 {
+	id, _ := strconv.ParseUint(s, 10, 64)
+	return id
 }
 
 // Output writes frames to the terminal. It splices page uploads in for their

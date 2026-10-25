@@ -1,7 +1,8 @@
 // Package render draws images into terminal cells.
 //
-// Two backends, modeled on yazi's adapter approach:
+// Three backends, modeled on yazi's adapter approach:
 //   - kitty graphics protocol with Unicode placeholders (kitty, ghostty; tmux passthrough)
+//   - sixel graphics (foot, WezTerm, Konsole, xterm, mlterm)
 //   - half-block cells (works everywhere)
 package render
 
@@ -14,7 +15,11 @@ import (
 type Result struct {
 	Cols, Rows int
 	Lines      []string // Rows lines, each exactly Cols cells wide
-	Transmit   []byte   // out-of-band bytes to write to the tty before Lines are shown
+	// Transmit holds out-of-band bytes: a kitty upload to write before Lines
+	// are shown, or with Paint, an image to draw over the cells of Lines
+	// after every frame that writes them.
+	Transmit []byte
+	Paint    bool
 }
 
 // Renderer converts an image into terminal cells. With invert, it inverts the

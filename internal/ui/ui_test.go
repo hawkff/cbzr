@@ -998,8 +998,14 @@ func clipboardText(t *testing.T, view string) string {
 }
 
 func TestMouseSelectsTextAndFollowsLinks(t *testing.T) {
+	for _, r := range []render.Renderer{render.NewKitty(), render.NewSixel()} {
+		t.Run(r.Name(), func(t *testing.T) { testMouseSelectsTextAndFollowsLinks(t, r) })
+	}
+}
+
+func testMouseSelectsTextAndFollowsLinks(t *testing.T, r render.Renderer) {
 	opened := ""
-	m := New(render.NewKitty(), new(server.Server), &bookmarks.Store{}, &progress.Store{}, func(u string) error { opened = u; return nil }, false, []string{testEPUBPath(t)})
+	m := New(r, new(server.Server), &bookmarks.Store{}, &progress.Store{}, func(u string) error { opened = u; return nil }, false, []string{testEPUBPath(t)})
 	if m.panes[0].book == nil {
 		t.Fatalf("open EPUB: %v", m.panes[0].err)
 	}

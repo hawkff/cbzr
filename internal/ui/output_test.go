@@ -2,10 +2,13 @@ package ui
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"cbzr/internal/book"
@@ -88,5 +91,95 @@ func TestOutputFramesAndSplicesUploads(t *testing.T) {
 	f.Close()
 	if n, err := out.Write(frame); err == nil || n != 0 {
 		t.Fatalf("failed output write: %d, %v", n, err)
+	}
+}
+
+func TestSixelImagesRedrawWhenTheirRowsChange(t *testing.T) {
+	m := testModel()
+	m.renderer = render.NewSixel()
+	p := m.panes[0]
+	p.book = &book.Book{Title: "Synthetic"}
+	img := []byte("\x1bP0;1;0q\"1;1;8;12#0;2;0;0;0#0~~\x1b\\")
+	p.res = render.Result{Cols: 3, Rows: 2, Lines: []string{"   ", "   "}, Transmit: img, Paint: true}
+	r, ok := m.shownRect(0, 0)
+	if !ok {
+		t.Fatal("the page is not shown")
+	}
+	frame := m.View()
+	for y, line := range strings.Split(frame, "\n") {
+		if strings.Contains(line, paintMarker) != (y >= r.Min.Y && y < r.Max.Y) {
+			t.Fatalf("row %d: marker %v, image rows %d-%d", y, strings.Contains(line, paintMarker), r.Min.Y, r.Max.Y-1)
+		}
+	}
+	if strings.Contains(frame, string(img)) || m.View() != frame {
+		t.Fatal("the frame carried the image or its marker changed")
+	}
+	// The image goes out once, after the rows that erased it, at its cell.
+	var out bytes.Buffer
+	if n, err := m.uploads.write(&out, []byte(frame)); err != nil || n != len(frame) {
+		t.Fatalf("write: %d, %v", n, err)
+	}
+	draw := fmt.Sprintf("\x1b7\x1b[%d;%dH%s\x1b8", r.Min.Y+1, r.Min.X+1, img)
+	if got := out.String(); strings.Count(got, draw) != 1 || !strings.HasSuffix(got, draw) || strings.Contains(got, paintMarker) {
+		t.Fatalf("frame output %q", got)
+	}
+	// Bubble Tea writes only the rows that changed; others keep the image.
+	out.Reset()
+	m.uploads.write(&out, []byte(strings.Split(frame, "\n")[0])) //nolint:errcheck
+	if strings.Contains(out.String(), "\x1b7") {
+		t.Fatal("a title update redrew the image")
+	}
+	// A page error replaces the image.
+	p.err = errors.New("corrupt page")
+	if strings.Contains(m.View(), paintMarker) {
+		t.Fatal("an error page kept its image")
+	}
+}
+
+func TestSixelSkipsStaleImages(t *testing.T) {
+	m := testModel()
+	m.renderer = render.NewSixel()
+	m.zen = true
+	p := m.panes[0]
+	p.book = &book.Book{Title: "Synthetic"}
+	img := []byte("\x1bP0;1;0q\"1;1;8;12#0;2;0;0;0#0~~\x1b\\")
+	// Rendered for a taller terminal, the image now reaches the bottom row.
+	lines := make([]string, m.height)
+	for i := range lines {
+		lines[i] = "  "
+	}
+	p.res = render.Result{Cols: 2, Rows: m.height, Lines: lines, Transmit: img, Paint: true}
+	if strings.Contains(m.View(), paintMarker) {
+		t.Fatal("an image on the bottom row was painted")
+	}
+	if _, ok := m.shownRect(0, 0); ok {
+		t.Fatal("the mouse maps onto an image that is not drawn")
+	}
+	// A resize, a font change included, drops sixel images until they render again.
+	p.res.Rows, p.res.Lines = 2, lines[:2]
+	p.res2 = p.res
+	if !strings.Contains(m.View(), paintMarker) {
+		t.Fatal("a fitting image was not painted")
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m = updated.(Model)
+	if m.panes[0].res.Rows != 0 || m.panes[0].res2.Rows != 0 || strings.Contains(m.View(), paintMarker) {
+		t.Fatal("a resize kept the old sixel images")
+	}
+}
+
+func TestSixelKeepsTheBottomRowFree(t *testing.T) {
+	m := testModel()
+	m.zen = true
+	if _, rows := m.imgBox(0); rows != m.height {
+		t.Fatalf("half blocks use %d of %d rows", rows, m.height)
+	}
+	m.renderer = render.NewSixel()
+	if _, rows := m.imgBox(0); rows != m.height-1 {
+		t.Fatalf("sixel uses %d of %d rows", rows, m.height)
+	}
+	m.mode = modeSearch // the search line already keeps the bottom row
+	if _, rows := m.imgBox(0); rows != m.height-1 {
+		t.Fatalf("sixel while searching uses %d of %d rows", rows, m.height)
 	}
 }

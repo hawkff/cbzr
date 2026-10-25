@@ -116,31 +116,46 @@ func (m Model) slotBox(i, slot int) image.Rectangle {
 	return image.Rect(x0, y0, x0+w, y0+h)
 }
 
+// shownRect returns the cells where pane i shows the rendered page of slot,
+// if it shows one: the pane keeps a page error or a stale size to itself,
+// and a sixel image is not drawn on the bottom row, where it would scroll
+// the screen.
+func (m Model) shownRect(i, slot int) (image.Rectangle, bool) {
+	p := m.panes[i]
+	res, err := p.res, p.err
+	if slot == 1 {
+		res, err = p.res2, p.err2
+	}
+	box := m.slotBox(i, slot)
+	if p.book == nil || err != nil || res.Rows == 0 || res.Cols > box.Dx() || res.Rows > box.Dy() {
+		return image.Rectangle{}, false
+	}
+	r := image.Rect(0, 0, res.Cols, res.Rows).Add(box.Min.Add(image.Pt((box.Dx()-res.Cols)/2, (box.Dy()-res.Rows)/2)))
+	if res.Paint && r.Max.Y >= m.height {
+		return image.Rectangle{}, false
+	}
+	return r, true
+}
+
 // pageFraction maps a cell to fractions of the page shown in a slot when it
 // has a text layer. With snap, cells outside the image move to its edge so a
 // drag can run past it. Rotated, webtoon and plain-text pages have no mapping.
 func (m Model) pageFraction(i, slot, x, y int, snap bool) (float64, float64, bool) {
 	p := m.panes[i]
-	res, page := p.res, p.shown[slot]
-	if slot == 1 {
-		res = p.res2
-	}
-	if p.book == nil || m.webtoon || p.rot != 0 || res.Rows == 0 || !p.book.Selectable(page) || p.book.IsTextPage(page) && m.renderer.Name() != "kitty" {
+	page := p.shown[slot]
+	img, shown := m.shownRect(i, slot)
+	// Half blocks show book text as text, not as the page image.
+	if !shown || m.webtoon || p.rot != 0 || !p.book.Selectable(page) || p.book.IsTextPage(page) && m.renderer.Name() == "halfblock" {
 		return 0, 0, false
 	}
-	box := m.slotBox(i, slot)
-	if res.Cols > box.Dx() || res.Rows > box.Dy() {
-		return 0, 0, false
-	}
-	img := image.Rect(0, 0, res.Cols, res.Rows).Add(box.Min.Add(image.Pt((box.Dx()-res.Cols)/2, (box.Dy()-res.Rows)/2)))
 	if snap {
 		x = min(max(x, img.Min.X), img.Max.X-1)
 		y = min(max(y, img.Min.Y), img.Max.Y-1)
 	} else if !image.Pt(x, y).In(img) {
 		return 0, 0, false
 	}
-	fx := (float64(x-img.Min.X) + 0.5) / float64(res.Cols)
-	fy := (float64(y-img.Min.Y) + 0.5) / float64(res.Rows)
+	fx := (float64(x-img.Min.X) + 0.5) / float64(img.Dx())
+	fy := (float64(y-img.Min.Y) + 0.5) / float64(img.Dy())
 	// Undo the zoom crop of render.Transform.
 	view := 1 / p.zoom
 	fx = clamp(p.cx-view/2, 0, 1-view) + fx*view

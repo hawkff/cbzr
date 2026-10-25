@@ -96,7 +96,7 @@ func TestCheckCLIHeadless(t *testing.T) {
 		{[]string{"-check", good, epub, good}, 0},
 		{[]string{"-check", filepath.Join(t.TempDir(), "absent.epub"), good}, 1},
 		{[]string{"-check"}, 2},
-		{[]string{"-r", "sixel", "-check", good}, 2},
+		{[]string{"-r", "ascii", "-check", good}, 2},
 	} {
 		config := t.TempDir()
 		args := append([]string{"-test.run=^TestCheckCLIHelperProcess$", "--"}, tc.args...)
