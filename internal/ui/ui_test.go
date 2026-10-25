@@ -522,6 +522,36 @@ func TestScreenshotNamesKeepEveryScript(t *testing.T) {
 	if first == second || len([]rune(first)) != 59 || !strings.HasPrefix(first, strings.Repeat("漫", 50)+"-") {
 		t.Fatalf("long titles: %q, %q", first, second)
 	}
+	// Four-byte letters and a five-digit page still fit a 255-byte name.
+	if name := shotName(strings.Repeat("\U00010400", 60), 9999); len(name) > 255 {
+		t.Fatalf("screenshot name has %d bytes", len(name))
+	}
+}
+
+func TestClosingABookDropsItsSearchText(t *testing.T) {
+	path := testBookPath(t)
+	m := testModel()
+	m.split = true
+	for _, p := range m.panes {
+		b, err := book.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.book = b
+	}
+	key := m.panes[0].book.Path + "\x000"
+	m.ocrText[key] = "page text"
+	m.ocrText["/other.cbz\x000"] = "other book"
+	updated, _ := m.closePane(0)
+	m = updated.(Model)
+	if m.ocrText[key] != "page text" {
+		t.Fatal("closing one of two panes on a book dropped its search text")
+	}
+	updated, _ = m.closePane(0)
+	m = updated.(Model)
+	if _, ok := m.ocrText[key]; ok || m.ocrText["/other.cbz\x000"] != "other book" {
+		t.Fatalf("search text after closing the book: %q", m.ocrText)
+	}
 }
 
 func TestSafeTextRemovesArchiveControls(t *testing.T) {
