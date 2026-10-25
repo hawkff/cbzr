@@ -37,8 +37,9 @@ text in books:
 | Arch | `poppler djvulibre antiword tesseract tesseract-data-eng xdg-utils wl-clipboard xclip ttf-dejavu noto-fonts noto-fonts-cjk` |
 | Alpine | `poppler-utils djvulibre antiword tesseract-ocr tesseract-ocr-data-eng xdg-utils wl-clipboard xclip font-dejavu font-noto-symbols font-noto-cjk` |
 
-Comics, EPUB, FB2 and DOCX work without these packages. Use Kitty or Ghostty
-for pixel graphics; other truecolor terminals use the half-block renderer.
+Comics, EPUB, FB2 and DOCX work without these packages. For pixel graphics,
+use Kitty or Ghostty, or a terminal with sixel graphics such as foot, WezTerm
+or Konsole. Other truecolor terminals use the half-block renderer.
 cbzr runs inside the terminal and needs no X server: in a Wayland session it
 copies through `wl-copy` and opens links through `xdg-open`.
 
@@ -71,21 +72,32 @@ copies through `wl-copy` and opens links through `xdg-open`.
 
 ## Rendering
 
-cbzr probes the terminal and chooses a rendering backend.
+At startup cbzr asks the terminal for its cell size and device attributes,
+then picks the first backend in this list that the terminal supports.
 
 - `kitty`: uses the Kitty graphics protocol with Unicode placeholders (`U=1`).
   cbzr sends images out of band and prints placeholder cells for Bubble Tea
   to repaint and join split panes. This backend runs in Kitty and Ghostty.
   Under tmux 3.3 or newer, cbzr enables passthrough and detects the outer
-  terminal. It uses XTWINOPS replies for cell dimensions on Unix. zellij,
+  terminal. It uses XTWINOPS replies for cell dimensions. zellij,
   GNU screen and terminals started from Kitty inherit Kitty's variables, and
   cbzr ignores them there. Pass `-r kitty` when detection misses, for example
   over SSH.
+- `sixel`: draws pages as sixel images. cbzr picks it when the terminal's
+  device attributes list sixel graphics, as in xterm started with
+  `-ti vt340`, foot, WezTerm, Konsole and mlterm. Grayscale pages keep their
+  exact gray levels; color pages get a median-cut palette sized to the
+  terminal's color registers, up to 256. Text written over a sixel image
+  erases the pixels under it, so cbzr draws an image again after any frame
+  that rewrites one of its rows. In focus mode the bottom row stays empty,
+  because the terminal moves the cursor below an image and an image on the
+  last row would scroll the screen. Pass `-r sixel` when detection misses.
 - `halfblock`: uses U+2580 with truecolor foreground and background pixels.
   Each cell displays two vertical pixels. Use this backend in a 24-bit color
   terminal with U+2580 support. Text pages of EPUB, FB2, DOCX and DOC books
   appear as plain text in this backend, and arrow keys scroll a page that
-  overflows the pane; webtoon mode needs `kitty`.
+  overflows the pane. Webtoon mode shows text pages only with `kitty` or
+  `sixel`.
 
 ## Keybindings
 
