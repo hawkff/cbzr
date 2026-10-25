@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,20 +113,17 @@ func (e rarEntry) openContext(ctx context.Context) (io.ReadCloser, error) {
 }
 
 func openRar(path string) (archive, error) {
-	files, err := rardecode.List(path)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Stat(path)
+	volumes := &volumeSizes{sizes: map[string]int64{}}
+	files, err := rardecode.List(path, rardecode.FileSystem(volumes))
 	if err != nil {
 		return nil, err
 	}
 	// Pages barely compress, so a solid stream that decodes to a hundred
-	// times the archive's size, beyond 1 GiB, is junk built to burn CPU, and
-	// one pass stops there. The size on disk counts, not the headers, which
-	// the archive could inflate. A large file before a page, such as a bonus
-	// video, still lets the reader through.
-	a := &rarArchive{path: path, budget: max(1<<30, 100*info.Size())}
+	// times the size of its volumes, beyond 1 GiB, is junk built to burn
+	// CPU, and one pass stops there. Volumes count by their size on disk,
+	// not by the headers, which the archive could inflate. A large file
+	// before a page, such as a bonus video, still lets the reader through.
+	a := &rarArchive{path: path, budget: max(1<<30, 100*volumes.total())}
 	for i, f := range files {
 		if f.IsDir {
 			continue
@@ -133,6 +131,37 @@ func openRar(path string) (archive, error) {
 		a.entries = append(a.entries, rarEntry{a, f, i})
 	}
 	return a, nil
+}
+
+// volumeSizes opens archive volumes for rardecode and keeps the size of
+// each, so a split archive's budget counts all of them. The listed files
+// keep it to open their contents, possibly from several pages at once.
+type volumeSizes struct {
+	mu    sync.Mutex
+	sizes map[string]int64
+}
+
+func (v *volumeSizes) Open(name string) (fs.File, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := f.Stat(); err == nil {
+		v.mu.Lock()
+		v.sizes[name] = info.Size()
+		v.mu.Unlock()
+	}
+	return f, nil
+}
+
+func (v *volumeSizes) total() int64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	var n int64
+	for _, size := range v.sizes {
+		n += size
+	}
+	return n
 }
 
 // openSolid decodes up to the entry and returns its bytes. When ctx ends,
@@ -173,6 +202,10 @@ func (a *rarArchive) openSolid(ctx context.Context, e rarEntry) (io.ReadCloser, 
 		}
 		var h *rardecode.FileHeader
 		if err == nil {
+			// shortcut: Next decodes whatever packed data the file holds past
+			// its declared size, outside the budget and any check, so a
+			// malformed archive spends CPU bounded only by its own size.
+			// Covering that needs a hook in rardecode.
 			h, err = a.solid.Next()
 		}
 		if err == nil && a.next == e.index && h.Name != e.f.Name {
@@ -222,11 +255,18 @@ func (a *rarArchive) closeSolid() error {
 }
 
 func (a *rarArchive) Entries() []entry { return a.entries }
+
+// Close stops decoding without waiting for it. Reads stop at their next
+// check, but Next can decode for long without one, so the reader closes in
+// the background once the decode lets go of it.
 func (a *rarArchive) Close() error {
 	a.closed.Store(true)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.closeSolid()
+	go func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.closeSolid() //nolint:errcheck
+	}()
+	return nil
 }
 
 // hiddenEntry reports junk entries: AppleDouble forks, hidden files,
