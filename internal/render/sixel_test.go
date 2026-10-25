@@ -208,6 +208,30 @@ func TestSixelCellsMatchTheBitmap(t *testing.T) {
 	}
 }
 
+func TestCellSizeFollowsAShrunkFont(t *testing.T) {
+	saved, savedIoctl := terminal, ioctlCellSize
+	t.Cleanup(func() { terminal, ioctlCellSize = saved, savedIoctl })
+	for _, tc := range []struct {
+		name           string
+		probeW, probeH float64
+		ioctlW, ioctlH float64
+		ioctlOK        bool
+		wantW, wantH   float64
+	}{
+		{"font shrunk after startup", 8, 16, 7, 14, true, 7, 14},
+		{"mux reports the whole window", 8, 16, 16, 32, true, 8, 16},
+		{"no window size", 8, 16, 0, 0, false, 8, 16},
+		{"no probe answer", 0, 0, 9, 18, true, 9, 18},
+		{"nothing known", 0, 0, 0, 0, false, 8, 16},
+	} {
+		terminal.cw, terminal.ch = tc.probeW, tc.probeH
+		ioctlCellSize = func() (float64, float64, bool) { return tc.ioctlW, tc.ioctlH, tc.ioctlOK }
+		if w, h := CellSize(); w != tc.wantW || h != tc.wantH {
+			t.Errorf("%s: cell %vx%v, want %vx%v", tc.name, w, h, tc.wantW, tc.wantH)
+		}
+	}
+}
+
 func TestProbeReadsSixelSupport(t *testing.T) {
 	for reply, want := range map[string]bool{
 		"\x1b[6;17;8t\x1b[?62;4;22c": true,  // foot

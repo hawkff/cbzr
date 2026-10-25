@@ -152,6 +152,9 @@ func TestSixelSkipsStaleImages(t *testing.T) {
 	if strings.Contains(m.View(), paintMarker) {
 		t.Fatal("an image on the bottom row was painted")
 	}
+	if _, ok := m.shownRect(0, 0); ok {
+		t.Fatal("the mouse maps onto an image that is not drawn")
+	}
 	// A resize, a font change included, drops sixel images until they render again.
 	p.res.Rows, p.res.Lines = 2, lines[:2]
 	p.res2 = p.res

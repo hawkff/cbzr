@@ -22,30 +22,17 @@ type Sixel struct {
 
 // NewSixel creates the sixel renderer for the probed cell size and colors.
 func NewSixel() *Sixel {
+	cw, ch := CellSize()
 	colors := terminal.colors
 	if colors < 2 {
 		colors = 256 // what sixel terminals offer when they don't say
 	}
-	s := &Sixel{colors: min(colors, 256)}
-	s.SetCellSize(CellSize())
-	return s
+	return &Sixel{cw: cw, ch: ch, colors: min(colors, 256)}
 }
 
 func (s *Sixel) Name() string { return "sixel" }
 
-// SetCellSize keeps the smaller of the given size and the size TIOCGWINSZ
-// reports now. Sixel pixels map one to one onto the screen, so cells taken too
-// large push an image past its rows. TIOCGWINSZ follows font changes that the
-// startup answer misses; under a multiplexer that reports the whole window's
-// pixels for a pane, it only comes out larger.
-func (s *Sixel) SetCellSize(cw, ch float64) {
-	if icw, ich, ok := ioctlCellSize(); ok {
-		cw, ch = min(cw, icw), min(ch, ich)
-	}
-	s.mu.Lock()
-	s.cw, s.ch = cw, ch
-	s.mu.Unlock()
-}
+func (s *Sixel) SetCellSize(cw, ch float64) { s.mu.Lock(); s.cw, s.ch = cw, ch; s.mu.Unlock() }
 
 func (s *Sixel) Delete(uint32) []byte { return nil }
 

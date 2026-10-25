@@ -117,7 +117,9 @@ func (m Model) slotBox(i, slot int) image.Rectangle {
 }
 
 // shownRect returns the cells where pane i shows the rendered page of slot,
-// if it shows one: the pane keeps a page error or a stale size to itself.
+// if it shows one: the pane keeps a page error or a stale size to itself,
+// and a sixel image is not drawn on the bottom row, where it would scroll
+// the screen.
 func (m Model) shownRect(i, slot int) (image.Rectangle, bool) {
 	p := m.panes[i]
 	res, err := p.res, p.err
@@ -128,7 +130,11 @@ func (m Model) shownRect(i, slot int) (image.Rectangle, bool) {
 	if p.book == nil || err != nil || res.Rows == 0 || res.Cols > box.Dx() || res.Rows > box.Dy() {
 		return image.Rectangle{}, false
 	}
-	return image.Rect(0, 0, res.Cols, res.Rows).Add(box.Min.Add(image.Pt((box.Dx()-res.Cols)/2, (box.Dy()-res.Rows)/2))), true
+	r := image.Rect(0, 0, res.Cols, res.Rows).Add(box.Min.Add(image.Pt((box.Dx()-res.Cols)/2, (box.Dy()-res.Rows)/2)))
+	if res.Paint && r.Max.Y >= m.height {
+		return image.Rectangle{}, false
+	}
+	return r, true
 }
 
 // pageFraction maps a cell to fractions of the page shown in a slot when it

@@ -1756,9 +1756,8 @@ func (m Model) View() string {
 				continue
 			}
 			// Every row a sixel image covers names it, so the writer draws
-			// it again whenever Bubble Tea rewrites one of those rows. An
-			// image on the bottom row would scroll the screen.
-			if r, ok := m.shownRect(i, slot); slot < m.slotCount() && ok && r.Max.Y < m.height {
+			// it again whenever Bubble Tea rewrites one of those rows.
+			if r, ok := m.shownRect(i, slot); slot < m.slotCount() && ok {
 				marker := string(m.uploads.appendPaint(nil, res.Transmit, r.Min))
 				for y := r.Min.Y; y < r.Max.Y && y < len(lines); y++ {
 					lines[y] = marker + lines[y]

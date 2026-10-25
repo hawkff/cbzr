@@ -22,20 +22,30 @@ var terminal struct {
 }
 
 // CellSize returns the pixel size of one terminal cell. The XTWINOPS
-// answer from the probe wins: it comes from the terminal itself,
-// while TIOCGWINSZ pixel fields pass through muxes (tmux, cmux) that
-// often report whole-window geometry for a differently-sized pane.
+// answer from the probe comes from the terminal itself, while TIOCGWINSZ
+// pixel fields pass through muxes (tmux, cmux) that often report
+// whole-window geometry for a differently-sized pane. TIOCGWINSZ follows
+// font changes, though, so a smaller size from it wins: sixel pixels map one
+// to one onto the screen, and cells taken too large push an image past its
+// rows.
+// shortcut: a font that grows after startup keeps the startup size, and so
+// does one that shrinks under a mux with whole-window geometry; fixing that
+// means asking XTWINOPS again and reading the reply through Bubble Tea.
 func CellSize() (cw, ch float64) {
-	if terminal.cw > 0 {
+	icw, ich, ok := ioctlCellSize()
+	switch {
+	case terminal.cw > 0 && ok:
+		return min(terminal.cw, icw), min(terminal.ch, ich)
+	case terminal.cw > 0:
 		return terminal.cw, terminal.ch
-	}
-	if cw, ch, ok := ioctlCellSize(); ok {
-		return cw, ch
+	case ok:
+		return icw, ich
 	}
 	return 8, 16
 }
 
-func ioctlCellSize() (float64, float64, bool) {
+// ioctlCellSize reads the cell size from TIOCGWINSZ; tests replace it.
+var ioctlCellSize = func() (float64, float64, bool) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return 0, 0, false
