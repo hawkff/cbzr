@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"cbzr/internal/book"
@@ -132,6 +133,35 @@ func TestSixelImagesRedrawWhenTheirRowsChange(t *testing.T) {
 	p.err = errors.New("corrupt page")
 	if strings.Contains(m.View(), paintMarker) {
 		t.Fatal("an error page kept its image")
+	}
+}
+
+func TestSixelSkipsStaleImages(t *testing.T) {
+	m := testModel()
+	m.renderer = render.NewSixel()
+	m.zen = true
+	p := m.panes[0]
+	p.book = &book.Book{Title: "Synthetic"}
+	img := []byte("\x1bP0;1;0q\"1;1;8;12#0;2;0;0;0#0~~\x1b\\")
+	// Rendered for a taller terminal, the image now reaches the bottom row.
+	lines := make([]string, m.height)
+	for i := range lines {
+		lines[i] = "  "
+	}
+	p.res = render.Result{Cols: 2, Rows: m.height, Lines: lines, Transmit: img, Paint: true}
+	if strings.Contains(m.View(), paintMarker) {
+		t.Fatal("an image on the bottom row was painted")
+	}
+	// A resize, a font change included, drops sixel images until they render again.
+	p.res.Rows, p.res.Lines = 2, lines[:2]
+	p.res2 = p.res
+	if !strings.Contains(m.View(), paintMarker) {
+		t.Fatal("a fitting image was not painted")
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m = updated.(Model)
+	if m.panes[0].res.Rows != 0 || m.panes[0].res2.Rows != 0 || strings.Contains(m.View(), paintMarker) {
+		t.Fatal("a resize kept the old sixel images")
 	}
 }
 

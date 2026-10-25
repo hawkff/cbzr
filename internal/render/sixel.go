@@ -22,17 +22,30 @@ type Sixel struct {
 
 // NewSixel creates the sixel renderer for the probed cell size and colors.
 func NewSixel() *Sixel {
-	cw, ch := CellSize()
 	colors := terminal.colors
 	if colors < 2 {
 		colors = 256 // what sixel terminals offer when they don't say
 	}
-	return &Sixel{cw: cw, ch: ch, colors: min(colors, 256)}
+	s := &Sixel{colors: min(colors, 256)}
+	s.SetCellSize(CellSize())
+	return s
 }
 
 func (s *Sixel) Name() string { return "sixel" }
 
-func (s *Sixel) SetCellSize(cw, ch float64) { s.mu.Lock(); s.cw, s.ch = cw, ch; s.mu.Unlock() }
+// SetCellSize keeps the smaller of the given size and the size TIOCGWINSZ
+// reports now. Sixel pixels map one to one onto the screen, so cells taken too
+// large push an image past its rows. TIOCGWINSZ follows font changes that the
+// startup answer misses; under a multiplexer that reports the whole window's
+// pixels for a pane, it only comes out larger.
+func (s *Sixel) SetCellSize(cw, ch float64) {
+	if icw, ich, ok := ioctlCellSize(); ok {
+		cw, ch = min(cw, icw), min(ch, ich)
+	}
+	s.mu.Lock()
+	s.cw, s.ch = cw, ch
+	s.mu.Unlock()
+}
 
 func (s *Sixel) Delete(uint32) []byte { return nil }
 
@@ -42,10 +55,13 @@ func (s *Sixel) Render(img image.Image, _ uint32, maxCols, maxRows int, invert b
 	s.mu.Unlock()
 	b := img.Bounds()
 	cols, rows, pw, ph := fitBox(b.Dx(), b.Dy(), maxCols, maxRows, cw, ch)
-	// Whole six-pixel bands keep the image inside its cells; a terminal
-	// moves the cursor below the last band it draws.
-	if ph > 6 {
+	// A terminal draws whole six-pixel bands and moves the cursor below the
+	// last one. When that band would spill into the next row of cells, trim
+	// the image to whole bands.
+	if ph > 6 && float64((ph+5)/6*6) > float64(rows)*ch {
 		pw, ph = max(1, pw*(ph-ph%6)/ph), ph-ph%6
+		cols = min(maxCols, max(1, int((float64(pw)+cw-1)/cw)))
+		rows = min(maxRows, max(1, int((float64(ph)+ch-1)/ch)))
 	}
 	dst := getRGBA(image.Rect(0, 0, pw, ph))
 	defer Recycle(dst)
@@ -267,15 +283,15 @@ func newSixelPalette(img *image.RGBA, colors int, tables *sixelHistogram) *sixel
 		}
 	}
 	// Each color is the mean of the pixels it stands for.
-	sums := make([][4]int, len(boxes))
+	sums := make([][4]int64, len(boxes)) // 32-bit ints overflow on large images
 	for y := 0; y < h; y++ {
 		row := img.Pix[img.PixOffset(img.Rect.Min.X, img.Rect.Min.Y+y):][:4*w]
 		for x := 0; x < len(row); x += 4 {
 			if r, g, b, ok := straight(row[x : x+4 : x+4]); ok {
 				i, _ := p.index(row[x : x+4 : x+4])
-				sums[i][0] += int(r)
-				sums[i][1] += int(g)
-				sums[i][2] += int(b)
+				sums[i][0] += int64(r)
+				sums[i][1] += int64(g)
+				sums[i][2] += int64(b)
 				sums[i][3]++
 			}
 		}

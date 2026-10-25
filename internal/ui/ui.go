@@ -357,6 +357,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.renderer.SetCellSize(render.CellSize())
+		// A sixel image has the pixel size of the cells it was drawn for, and
+		// a font change makes that wrong. Drop it until it renders again.
+		for _, p := range m.panes {
+			if p.res.Paint {
+				p.res = render.Result{}
+			}
+			if p.res2.Paint {
+				p.res2 = render.Result{}
+			}
+		}
 		m.picker.SetHeight(max(1, m.height-4))
 		m.resizeGen++
 		gen := m.resizeGen
@@ -1746,8 +1756,9 @@ func (m Model) View() string {
 				continue
 			}
 			// Every row a sixel image covers names it, so the writer draws
-			// it again whenever Bubble Tea rewrites one of those rows.
-			if r, ok := m.shownRect(i, slot); slot < m.slotCount() && ok {
+			// it again whenever Bubble Tea rewrites one of those rows. An
+			// image on the bottom row would scroll the screen.
+			if r, ok := m.shownRect(i, slot); slot < m.slotCount() && ok && r.Max.Y < m.height {
 				marker := string(m.uploads.appendPaint(nil, res.Transmit, r.Min))
 				for y := r.Min.Y; y < r.Max.Y && y < len(lines); y++ {
 					lines[y] = marker + lines[y]

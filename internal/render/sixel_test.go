@@ -167,8 +167,8 @@ func TestSixelRenderFitsItsCells(t *testing.T) {
 		}
 		img, _ := decodeSixel(t, res.Transmit)
 		b := img.Bounds()
-		if b.Dy()%6 != 0 || b.Dx() > res.Cols*8 || b.Dy() > res.Rows*17 {
-			t.Fatalf("%v does not fill whole bands inside %dx%d cells", b, res.Cols, res.Rows)
+		if (b.Dy()+5)/6*6 > res.Rows*17 || b.Dx() > res.Cols*8 || b.Dy() > res.Rows*17 {
+			t.Fatalf("%v spills out of %dx%d cells", b, res.Cols, res.Rows)
 		}
 		want := color.NRGBA{10, 20, 30, 255}
 		if invert {
@@ -176,6 +176,34 @@ func TestSixelRenderFitsItsCells(t *testing.T) {
 		}
 		if g := img.NRGBAAt(b.Dx()/2, b.Dy()/2); !near(g, want) {
 			t.Fatalf("invert=%v: %v, want %v", invert, g, want)
+		}
+	}
+}
+
+func TestSixelCellsMatchTheBitmap(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		w, h               int
+		cw, ch             float64
+		maxCols, maxRows   int
+		wantW, wantH       int
+		wantCols, wantRows int
+	}{
+		// The last band ends inside the image's row, so nothing is trimmed.
+		{"short and wide", 640, 11, 8, 16, 80, 10, 640, 11, 80, 1},
+		// A 9-pixel strip in 10-pixel rows would spill its second band
+		// into the next row; trimmed to one band, it needs fewer columns.
+		{"band spill", 100, 9, 10, 10, 10, 5, 66, 6, 7, 1},
+	} {
+		page := image.NewRGBA(image.Rect(0, 0, tc.w, tc.h))
+		draw.Draw(page, page.Bounds(), image.Black, image.Point{}, draw.Src)
+		res, err := (&Sixel{cw: tc.cw, ch: tc.ch, colors: 256}).Render(page, 0, tc.maxCols, tc.maxRows, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, _ := decodeSixel(t, res.Transmit)
+		if got := img.Bounds().Size(); got != image.Pt(tc.wantW, tc.wantH) || res.Cols != tc.wantCols || res.Rows != tc.wantRows {
+			t.Fatalf("%s: %v in %dx%d cells, want %dx%d in %dx%d", tc.name, got, res.Cols, res.Rows, tc.wantW, tc.wantH, tc.wantCols, tc.wantRows)
 		}
 	}
 }
