@@ -194,6 +194,8 @@ func TestSixelCellsMatchTheBitmap(t *testing.T) {
 		// A 9-pixel strip in 10-pixel rows would spill its second band
 		// into the next row; trimmed to one band, it needs fewer columns.
 		{"band spill", 100, 9, 10, 10, 10, 5, 66, 6, 7, 1},
+		// Four rows of 16.375 pixels hold 65.5 pixels; 66 need a fifth.
+		{"fractional cells", 85, 66, 8.5, 16.375, 10, 8, 85, 66, 10, 5},
 	} {
 		page := image.NewRGBA(image.Rect(0, 0, tc.w, tc.h))
 		draw.Draw(page, page.Bounds(), image.Black, image.Point{}, draw.Src)
@@ -229,6 +231,32 @@ func TestCellSizeFollowsAShrunkFont(t *testing.T) {
 		if w, h := CellSize(); w != tc.wantW || h != tc.wantH {
 			t.Errorf("%s: cell %vx%v, want %vx%v", tc.name, w, h, tc.wantW, tc.wantH)
 		}
+	}
+}
+
+// trickle answers each read with its next chunk, as a slow link does, and
+// with nothing once they run out, as a read that VTIME ends.
+type trickle struct{ chunks []string }
+
+func (t *trickle) Write(p []byte) (int, error) { return len(p), nil }
+
+func (t *trickle) Read(p []byte) (int, error) {
+	if len(t.chunks) == 0 {
+		return 0, nil
+	}
+	n := copy(p, t.chunks[0])
+	t.chunks = t.chunks[1:]
+	return n, nil
+}
+
+func TestAskWaitsForAReplyInPieces(t *testing.T) {
+	tty := &trickle{chunks: []string{"\x1b[6;17;8t"}}
+	for _, c := range "\x1b[?62;4;22c" {
+		tty.chunks = append(tty.chunks, string(c))
+	}
+	// Bytes left unread would reach the reader as keys.
+	if reply := ask(tty, "\x1b[16t\x1b[c"); !hasSixel(reply) || len(tty.chunks) != 0 {
+		t.Fatalf("reply %q with %d chunks unread", reply, len(tty.chunks))
 	}
 }
 

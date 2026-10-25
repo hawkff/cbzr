@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/png"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"cbzr/internal/book"
 )
@@ -239,6 +241,15 @@ func TestOwnerOnlyKnowsLoopbackOwners(t *testing.T) {
 	if _, ok := socketUID(table, "0100007F:D432", "0100007F:C350"); ok {
 		t.Fatal("found a socket that is not in the table")
 	}
+	// tcp6 lists an IPv4-mapped connection behind the ::ffff: prefix, in
+	// host-order words; the fixture has a little-endian machine's.
+	if binary.NativeEndian.Uint16([]byte{1, 0}) == 1 {
+		table6 := `  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0000000000000000FFFF00000100007F:D431 0000000000000000FFFF00000100007F:C350 01 00000000:00000000 00:00000000 00000000  1002        0 103 1 0 20 4 30 10 -1`
+		if uid, ok := socketUID(table6, mappedPrefix+"0100007F:D431", mappedPrefix+"0100007F:C350"); !ok || uid != 1002 {
+			t.Fatalf("mapped client owner = %d, %v", uid, ok)
+		}
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -262,5 +273,48 @@ func TestOwnerOnlyKnowsLoopbackOwners(t *testing.T) {
 		if uid, ok := peerUID(c); !ok || uid != os.Getuid() {
 			t.Fatalf("own connection owner = %d, %v", uid, ok)
 		}
+	}
+}
+
+func TestOwnerOnlyClosesOtherUsersConnections(t *testing.T) {
+	saved := peerUID
+	t.Cleanup(func() { peerUID = saved })
+	stranger := true
+	peerUID = func(net.Conn) (int, bool) {
+		if stranger {
+			stranger = false
+			return os.Getuid() + 1, true
+		}
+		return os.Getuid(), true
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := (ownerOnly{ln}).Accept(); err == nil {
+			accepted <- c
+		}
+	}()
+	other, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	other.SetReadDeadline(time.Now().Add(10 * time.Second)) //nolint:errcheck
+	if _, err := other.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("another user's connection stayed open: %v", err)
+	}
+	owner, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	c := <-accepted
+	defer c.Close()
+	if c.RemoteAddr().String() != owner.LocalAddr().String() {
+		t.Fatal("Accept returned another user's connection")
 	}
 }

@@ -8,6 +8,7 @@ package render
 
 import (
 	"image"
+	"math"
 	"sync"
 )
 
@@ -66,7 +67,12 @@ func fitBox(iw, ih, maxCols, maxRows int, cw, ch float64) (cols, rows, pw, ph in
 	}
 	pw = max(1, int(float64(iw)*s))
 	ph = max(1, int(float64(ih)*s))
-	cols = min(maxCols, max(1, int((float64(pw)+cw-1)/cw)))
-	rows = min(maxRows, max(1, int((float64(ph)+ch-1)/ch)))
-	return cols, rows, pw, ph
+	return cellsFor(pw, cw, maxCols), cellsFor(ph, ch, maxRows), pw, ph
+}
+
+// cellsFor returns how many cells of size cell px pixels reach into, from 1
+// to limit. Cell sizes taken from the window size are fractional, and a
+// quotient within float error of a whole number counts as that number.
+func cellsFor(px int, cell float64, limit int) int {
+	return min(limit, max(1, int(math.Ceil(float64(px)/cell-1e-9))))
 }

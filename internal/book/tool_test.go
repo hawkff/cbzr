@@ -185,6 +185,24 @@ func TestSearchTextReadsPDFAndDJVULayers(t *testing.T) {
 			t.Fatalf("misaligned layer used: %q, %q", first, second)
 		}
 	})
+	t.Run("invisible characters", func(t *testing.T) {
+		sh, err := exec.LookPath("sh")
+		if err != nil {
+			t.Skip("shell helper needs sh")
+		}
+		dir := t.TempDir()
+		// A zero-width space and a soft hyphen inside one word.
+		script := "#!" + sh + "\nprintf 'co\\342\\200\\213oper\\302\\255ate\\fsecond\\f'\n"
+		if err := os.WriteFile(filepath.Join(dir, "pdftotext"), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		b := &Book{pages: []entry{toolPage{path: "synthetic.pdf", page: 1}, toolPage{path: "synthetic.pdf", page: 2}}}
+		defer b.Close()
+		if got := b.SearchText(0); got != "cooperate" {
+			t.Fatalf("search text = %q", got)
+		}
+	})
 	t.Run("djvu", func(t *testing.T) {
 		requireTools(t, "c44", "djvm", "djvused")
 		dir := t.TempDir()

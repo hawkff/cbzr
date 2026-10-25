@@ -1215,12 +1215,24 @@ func (m Model) closePane(i int) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) closeBook(i int) {
-	if m.panes[i].cancelRender != nil {
-		m.panes[i].cancelRender()
+	p := m.panes[i]
+	if p.cancelRender != nil {
+		p.cancelRender()
 	}
-	if m.panes[i].book != nil {
-		m.panes[i].book.Close() //nolint:errcheck
+	if p.book == nil {
+		return
 	}
+	// Search text of a closed book would stay in memory until exit, unless
+	// the other pane still reads the same file.
+	if other := m.panes[1-i].book; other == nil || other.Path != p.book.Path {
+		prefix := p.book.Path + "\x00"
+		for key := range m.ocrText {
+			if strings.HasPrefix(key, prefix) {
+				delete(m.ocrText, key)
+			}
+		}
+	}
+	p.book.Close() //nolint:errcheck
 }
 
 func (m *Model) syncServer() {
@@ -1338,8 +1350,7 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 		if dir == "" {
 			dir, _ = os.Getwd()
 		}
-		name := fmt.Sprintf("cbzr-%s-p%03d.png", sanitize(b.Title), page+1)
-		path := filepath.Join(dir, name)
+		path := filepath.Join(dir, shotName(b.Title, page))
 		f, err := os.Create(path)
 		if err != nil {
 			return shotMsg{err: err}
@@ -1356,6 +1367,11 @@ func (m Model) screenshot() (tea.Model, tea.Cmd) {
 	}
 }
 
+// shotName names the screenshot of page index page.
+func shotName(title string, page int) string {
+	return fmt.Sprintf("cbzr-%s-p%03d.png", sanitize(title), page+1)
+}
+
 // sanitize keeps letters and digits of any script, so screenshots of books
 // with Cyrillic or Japanese titles get distinct names.
 func sanitize(s string) string {
@@ -1368,8 +1384,10 @@ func sanitize(s string) string {
 		}
 		return -1
 	}, s))
-	if len(name) <= 60 {
-		return string(name) // up to 4 bytes a rune stays within a 255-byte file name
+	if len(name) <= 56 {
+		// 56 runes of up to 4 bytes leave room for the rest of the name and
+		// any page number within a 255-byte file name.
+		return string(name)
 	}
 	// Long titles keep a checksum of the rest, so volumes of a series stay apart.
 	return fmt.Sprintf("%s-%08x", string(name[:50]), crc32.ChecksumIEEE([]byte(string(name))))

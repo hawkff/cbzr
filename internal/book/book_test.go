@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	rardecode "github.com/nwaples/rardecode/v2"
 )
 
 type testArchive []entry
@@ -161,6 +163,193 @@ func TestOpenSolidRAR(t *testing.T) {
 	}
 	if _, err := readEntry(b.pages[2], maxPageBytes); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("read after close: %v", err)
+	}
+}
+
+// endsAfter is a context that reports cancellation once checks run out.
+type endsAfter struct {
+	context.Context
+	checks int
+}
+
+func (c *endsAfter) Err() error {
+	if c.checks--; c.checks < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// stopsAfter is a context that ends once the solid reader has decoded more
+// than after bytes.
+type stopsAfter struct {
+	context.Context
+	a     *rarArchive
+	after int64
+}
+
+func (c stopsAfter) Err() error {
+	if c.a.decoded > c.after {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestSolidRARResumesCanceledDecodes(t *testing.T) {
+	// Three 64x64 BMPs, each larger than one read of the decoder.
+	const path = "testdata/solid-bmp.cbr"
+	open := func() (*Book, rarEntry, rarEntry) {
+		b, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { b.Close() })
+		if b.Len() != 3 || !b.pages[1].(rarEntry).f.Solid {
+			t.Fatalf("%d pages; the fixture needs solid files after the first", b.Len())
+		}
+		return b, b.pages[1].(rarEntry), b.pages[2].(rarEntry)
+	}
+	ref, _, _ := open()
+	var want [3][]byte
+	for i := range want {
+		var err error
+		if want[i], err = readEntry(ref.pages[i], maxPageBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	size := int64(len(want[0]))
+
+	// Stopped partway through the first file, the reader keeps its place,
+	// and a later page continues from there.
+	_, _, last := open()
+	a := last.a
+	if _, err := last.openContext(stopsAfter{context.Background(), a, 0}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stopped request: %v", err)
+	}
+	if a.solid == nil || a.next != 1 || a.decoded == 0 || a.decoded >= size {
+		t.Fatalf("stopped at file %d after %d bytes", a.next, a.decoded)
+	}
+	if got, err := readEntry(last, maxPageBytes); err != nil || !bytes.Equal(got, want[2]) {
+		t.Fatalf("continued request: %v", err)
+	}
+	// The bytes decoded before the stop stay charged to the pass.
+	if a.decoded != 3*size {
+		t.Fatalf("pass charged %d bytes for three files of %d", a.decoded, size)
+	}
+
+	// A page stopped partway starts over when asked for again, and the page
+	// after it continues.
+	_, second, last := open()
+	a = second.a
+	if _, err := second.openContext(stopsAfter{context.Background(), a, size}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stopped page: %v", err)
+	}
+	if a.solid == nil || a.next != 2 || a.decoded <= size || a.decoded >= 2*size {
+		t.Fatalf("stopped page left file %d after %d bytes", a.next, a.decoded)
+	}
+	for i, e := range []rarEntry{second, last} {
+		if got, err := readEntry(e, maxPageBytes); err != nil || !bytes.Equal(got, want[i+1]) {
+			t.Fatalf("page %d after the stop: %v", i+1, err)
+		}
+	}
+
+	// A decoder error that comes while the request ends still closes the
+	// reader: after some errors, rardecode cannot read on.
+	if _, err := readEntry(second, maxPageBytes); err != nil {
+		t.Fatal(err)
+	}
+	renamed := *last.f
+	renamed.Name = "other.bmp"
+	wrong := rarEntry{a, &renamed, last.index}
+	// One check on entry and one on the read that finds the second file
+	// ended; the third, after Next, reports the end.
+	if _, err := wrong.openContext(&endsAfter{Context: context.Background(), checks: 2}); err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("mismatched file: %v", err)
+	}
+	if a.solid != nil {
+		t.Fatal("a failed decode kept its reader")
+	}
+}
+
+func TestRARCloseDoesNotWaitForTheDecoder(t *testing.T) {
+	b, err := Open("testdata/solid.cbr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEntry(b.pages[2], maxPageBytes); err != nil {
+		t.Fatal(err)
+	}
+	a := b.arc.(*rarArchive)
+	a.mu.Lock() // a decode inside Next, which no check can stop
+	done := make(chan error, 1)
+	go func() { done <- b.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited for the decoder")
+	}
+	a.mu.Unlock()
+	// The reader closes once the decoder lets go of it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		a.mu.Lock()
+		open := a.solid != nil
+		a.mu.Unlock()
+		if !open {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the solid reader stayed open")
+		}
+	}
+	if _, err := readEntry(b.pages[2], maxPageBytes); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("read after close: %v", err)
+	}
+}
+
+func TestRARBudgetCountsEveryVolume(t *testing.T) {
+	volumes := &volumeSizes{sizes: map[string]int64{}}
+	if _, err := rardecode.List("testdata/split.part1.rar", rardecode.FileSystem(volumes)); err != nil {
+		t.Fatal(err)
+	}
+	var want int64
+	for n := 1; n <= 3; n++ {
+		info, err := os.Stat(fmt.Sprintf("testdata/split.part%d.rar", n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want += info.Size()
+	}
+	if len(volumes.sizes) != 3 || volumes.total() != want {
+		t.Fatalf("counted %d volumes of %d bytes, want 3 of %d", len(volumes.sizes), volumes.total(), want)
+	}
+}
+
+func TestSolidRARBoundsDecoding(t *testing.T) {
+	b, err := Open("testdata/solid.cbr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	// One pass may decode every file before a page, however large each one
+	// is, until the archive's budget runs out.
+	var size int64
+	for _, p := range b.pages {
+		data, err := readEntry(p, maxPageBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += int64(len(data))
+	}
+	last := b.pages[2].(rarEntry)
+	last.a.budget = size
+	if _, err := readEntry(last, maxPageBytes); err != nil {
+		t.Fatalf("page within the budget: %v", err)
+	}
+	last.a.budget = size - 1
+	if _, err := readEntry(last, maxPageBytes); err == nil || !strings.Contains(err.Error(), "expands past") {
+		t.Fatalf("page past the budget: %v", err)
 	}
 }
 

@@ -4,11 +4,13 @@ package render
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -98,14 +100,16 @@ func probe(sixel bool) {
 // deviceAttributes matches a DA1 reply, "ESC [ ? class ; attributes c".
 var deviceAttributes = regexp.MustCompile(`\x1b\[\?([0-9;]*)c`)
 
-// ask writes query and collects replies until the DA1 reply arrives.
-func ask(tty *os.File, query string) []byte {
-	if _, err := tty.WriteString(query); err != nil {
+// ask writes query and collects replies until the DA1 reply arrives, the
+// terminal stays silent for 300ms (VTIME ends such a read with nothing) or
+// two seconds pass. A slow link can deliver a reply in many small reads.
+func ask(tty io.ReadWriter, query string) []byte {
+	if _, err := io.WriteString(tty, query); err != nil {
 		return nil
 	}
 	var buf []byte
 	tmp := make([]byte, 256)
-	for range 8 { // bounded: VTIME caps each read at 300ms
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
 		n, err := tty.Read(tmp)
 		buf = append(buf, tmp[:n]...)
 		if deviceAttributes.Match(buf) || err != nil || n == 0 || len(buf) > 4096 {
