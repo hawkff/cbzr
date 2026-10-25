@@ -164,6 +164,49 @@ func TestOpenSolidRAR(t *testing.T) {
 	}
 }
 
+// endsAfter is a context that reports cancellation once checks run out.
+type endsAfter struct {
+	context.Context
+	checks int
+}
+
+func (c *endsAfter) Err() error {
+	if c.checks--; c.checks < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestSolidRARStopsAndLimitsSkippedFiles(t *testing.T) {
+	b, err := Open("testdata/solid.cbr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	last := b.pages[2].(rarEntry)
+	want, err := readEntry(last, maxPageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A request that ends while the first file decodes leaves the reader
+	// there, and the next request continues to the same bytes.
+	if _, err := last.openContext(&endsAfter{Context: context.Background(), checks: 1}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ended request: %v", err)
+	}
+	if last.a.solid == nil || last.a.next != 1 {
+		t.Fatalf("ended request moved the reader to file %d", last.a.next)
+	}
+	if got, err := readEntry(last, maxPageBytes); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("continued request: %v", err)
+	}
+	// Files before a page obey the page limit too.
+	defer func(limit int64) { maxSkipBytes = limit }(maxSkipBytes)
+	maxSkipBytes = 10
+	if _, err := readEntry(b.pages[1], maxPageBytes); err == nil || !strings.Contains(err.Error(), "exceeds 10 bytes") {
+		t.Fatalf("oversized skipped file: %v", err)
+	}
+}
+
 func TestPageCacheBoundsDecodedPixels(t *testing.T) {
 	var data bytes.Buffer
 	if err := png.Encode(&data, image.NewGray(image.Rect(0, 0, 5000, 5000))); err != nil {

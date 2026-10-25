@@ -3,6 +3,7 @@ package book
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -97,12 +98,15 @@ type rarEntry struct {
 	index int // position among all archive files, directories included
 }
 
-func (e rarEntry) Name() string { return e.f.Name }
-func (e rarEntry) Open() (io.ReadCloser, error) {
+func (e rarEntry) Name() string                 { return e.f.Name }
+func (e rarEntry) Open() (io.ReadCloser, error) { return e.openContext(context.Background()) }
+
+// openContext opens the file. A solid file stops decoding when ctx ends.
+func (e rarEntry) openContext(ctx context.Context) (io.ReadCloser, error) {
 	if !e.f.Solid {
 		return e.f.Open()
 	}
-	return e.a.openSolid(e)
+	return e.a.openSolid(ctx, e)
 }
 
 func openRar(path string) (archive, error) {
@@ -120,12 +124,26 @@ func openRar(path string) (archive, error) {
 	return a, nil
 }
 
-// openSolid decodes up to the entry and returns its bytes.
-func (a *rarArchive) openSolid(e rarEntry) (io.ReadCloser, error) {
+// maxSkipBytes caps each file a solid page decodes on its way, so a small
+// archive cannot hide gigabytes of junk before its pages. Tests lower it.
+var maxSkipBytes int64 = maxPageBytes
+
+// openSolid decodes up to the entry and returns its bytes. When ctx ends,
+// the reader keeps its place, and the next page continues from there.
+func (a *rarArchive) openSolid(ctx context.Context, e rarEntry) (io.ReadCloser, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed.Load() {
 		return nil, os.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err // ended while an earlier page held the reader
+	}
+	fail := func(err error) (io.ReadCloser, error) {
+		if ctx.Err() == nil {
+			a.closeSolid() // only a canceled decode stops at a known place
+		}
+		return nil, err
 	}
 	if a.solid == nil || a.next > e.index {
 		a.closeSolid()
@@ -135,12 +153,18 @@ func (a *rarArchive) openSolid(e rarEntry) (io.ReadCloser, error) {
 		}
 		a.solid, a.next = rc, 0
 	}
+	r := solidReader{a, ctx}
 	for a.next <= e.index {
 		var err error
 		if a.next > 0 {
-			// Decode the rest of the current file here, where Close can stop
-			// it; Next would decode it without checking.
-			_, err = io.Copy(io.Discard, solidReader{a})
+			// Decode the rest of the current file here, where Close and ctx
+			// can stop it; Next would decode it without checking.
+			switch _, err = io.CopyN(io.Discard, r, maxSkipBytes+1); err {
+			case io.EOF:
+				err = nil
+			case nil:
+				err = fmt.Errorf("a file before %q exceeds %d bytes", e.f.Name, maxSkipBytes)
+			}
 		}
 		var h *rardecode.FileHeader
 		if err == nil {
@@ -150,25 +174,30 @@ func (a *rarArchive) openSolid(e rarEntry) (io.ReadCloser, error) {
 			err = fmt.Errorf("RAR entry %d is %q, want %q", e.index, h.Name, e.f.Name)
 		}
 		if err != nil {
-			a.closeSolid()
-			return nil, err
+			return fail(err)
 		}
 		a.next++
 	}
-	data, err := readBounded(solidReader{a}, maxPageBytes)
+	data, err := readBounded(r, maxPageBytes)
 	if err != nil {
-		a.closeSolid()
-		return nil, err
+		return fail(err)
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-// solidReader reads the current solid file until the archive closes.
-type solidReader struct{ a *rarArchive }
+// solidReader reads the current solid file until the archive closes or the
+// request ends.
+type solidReader struct {
+	a   *rarArchive
+	ctx context.Context
+}
 
 func (r solidReader) Read(p []byte) (int, error) {
 	if r.a.closed.Load() {
 		return 0, os.ErrClosed
+	}
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
 	}
 	return r.a.solid.Read(p)
 }

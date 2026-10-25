@@ -127,6 +127,10 @@ func (b *Book) SearchText(i int) string {
 		if out, err := runToolContext(ctx, args[0], args[1:]...); err == nil {
 			// A stray form feed would move every later page; OCR is safer then.
 			if pages := strings.Split(string(out), "\f"); len(pages) == len(b.pages)+1 {
+				// Selection drops the characters PDFs hide in words; search must too.
+				for i, page := range pages {
+					pages[i] = pdfWordText(page)
+				}
 				b.searchText = pages
 			}
 		}

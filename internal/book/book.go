@@ -371,7 +371,12 @@ func (b *Book) pageBytes(ctx context.Context, i int) ([]byte, string, error) {
 		data, err = p.render(ctx)
 	default:
 		var r io.ReadCloser
-		if r, err = e.Open(); err == nil {
+		if re, ok := e.(rarEntry); ok {
+			r, err = re.openContext(ctx) // a solid decode stops with the request
+		} else {
+			r, err = e.Open()
+		}
+		if err == nil {
 			data, err = readBounded(contextReader{ctx, r}, maxPageBytes)
 			r.Close()
 		}
