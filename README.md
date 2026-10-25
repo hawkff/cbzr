@@ -5,7 +5,7 @@ terminal.
 
 ## Building and dependencies
 
-- Go 1.26.4+ to build cbzr.
+- Go 1.26.10+ to build cbzr.
 - cgo and Xcode command-line tools for native macOS builds.
 - [Tesseract](https://github.com/tesseract-ocr/tesseract) for OCR search.
 - [Poppler](https://poppler.freedesktop.org/) (`pdfinfo`, `pdftoppm`; `pdftohtml`
@@ -23,7 +23,7 @@ CGO_ENABLED=0 go build -o cbzr .
 ./cbzr book.cbz
 ```
 
-With a Go older than 1.26.4, such as Debian 13's, `GOTOOLCHAIN=auto` fetches
+With a Go older than 1.26.10, such as Debian 13's, `GOTOOLCHAIN=auto` fetches
 the right toolchain. Debian sets it by default.
 
 The optional packages add the document converters, OCR, a browser launcher,
@@ -67,8 +67,10 @@ copies through `wl-copy` and opens links through `xdg-open`.
   scaled to fit 2000×2000 pixels. `-check` only counts their pages.
 - cbzr decodes JPEG, PNG, GIF, WebP, and BMP page images.
 - cbzr limits decompressed page data to 64 MiB and image dimensions to
-  32 million pixels. ComicInfo.xml must fit within 1 MiB; FB2 files and
-  DOCX documents within 32 MiB.
+  32 million pixels. Reaching a page in a solid RAR may decode at most 100
+  times the archive's size on disk, all volumes counted, or 1 GiB for small
+  archives. ComicInfo.xml must fit within 1 MiB; FB2 files and DOCX
+  documents within 32 MiB.
 
 ## Rendering
 
@@ -174,8 +176,9 @@ have no text layer yet.
 `e` starts a server on `127.0.0.1` using a random port from 50000 through
 59999, then opens the current book and page through a one-time link. The
 link redirects to a URL with a random token, so the token never appears on
-a command line, and the token URL's root lists the open books. On Linux the
-server also turns away connections from other users. The browser lists its
+a command line, and the token URL's root lists the open books. On Linux,
+where it can read `/proc/net/tcp`, the server also turns away connections
+from other users. The browser lists its
 keybindings in the header and opens with the active terminal pane's
 inversion setting. Over SSH, forward the port with
 `ssh -L PORT:127.0.0.1:PORT` and open the link from the status bar; it works
