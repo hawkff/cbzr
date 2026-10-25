@@ -47,8 +47,7 @@ func (s *Sixel) Render(img image.Image, _ uint32, maxCols, maxRows int, invert b
 	// the image to whole bands.
 	if ph > 6 && float64((ph+5)/6*6) > float64(rows)*ch {
 		pw, ph = max(1, pw*(ph-ph%6)/ph), ph-ph%6
-		cols = min(maxCols, max(1, int((float64(pw)+cw-1)/cw)))
-		rows = min(maxRows, max(1, int((float64(ph)+ch-1)/ch)))
+		cols, rows = cellsFor(pw, cw, maxCols), cellsFor(ph, ch, maxRows)
 	}
 	dst := getRGBA(image.Rect(0, 0, pw, ph))
 	defer Recycle(dst)
