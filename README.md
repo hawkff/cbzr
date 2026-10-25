@@ -15,8 +15,14 @@ terminal.
 
 ## Linux
 
-On Linux, use the terminal or browser reader. The native fullscreen window
-requires macOS. Build without cgo:
+On Linux, use the terminal or browser reader; the native fullscreen window
+requires macOS. To fill the screen with the page, make the terminal
+fullscreen with its own key (`Ctrl+Shift+F11` in kitty, `Alt+Enter` in
+WezTerm, `Ctrl+Shift+F` in Konsole) or the window manager's, then press `z`
+to hide the titles and status bar. In the browser reader, `F11` does the
+same.
+
+Build without cgo:
 
 ```sh
 CGO_ENABLED=0 go build -o cbzr .
