@@ -6,14 +6,36 @@ import (
 	"strings"
 )
 
-// supportsKitty reports whether the terminal — or, under tmux, the terminal
-// hosting the tmux client — likely speaks the kitty graphics protocol with
-// Unicode placeholders (kitty, ghostty).
+// inHerdr reports whether cbzr runs in a herdr pane with no multiplexer in
+// between. herdr names itself in place of the terminal around it and draws
+// kitty graphics for its panes, so the probe asks it with a graphics query,
+// which herdr accepts unless its terminal.kitty_graphics setting is off. A
+// multiplexer inside the pane keeps herdr's name and does not pass the query
+// on. GNU screen and a tmux too old to name itself would show it as a status
+// line or title.
+func inHerdr() bool {
+	for _, v := range []string{"STY", "TMUX", "ZELLIJ"} {
+		if os.Getenv(v) != "" {
+			return false
+		}
+	}
+	return os.Getenv("TERM_PROGRAM") == "herdr"
+}
+
+// supportsKitty reports whether the terminal likely speaks the kitty graphics
+// protocol with Unicode placeholders, as kitty, ghostty and herdr do. Under
+// tmux, the terminal hosting the tmux client counts.
 func supportsKitty() bool {
 	// shortcut: zellij keeps kitty's TERM but drops its graphics, and a terminal
 	// started from inside zellij inherits ZELLIJ too; -r kitty covers that case.
 	if os.Getenv("ZELLIJ") != "" {
 		return false
+	}
+	if inHerdr() {
+		// shortcut: herdr accepts the query even when the terminal around it
+		// has no kitty graphics, and offers no way to ask about that terminal;
+		// pages stay blank there until -r halfblock.
+		return terminal.kitty
 	}
 	prog := os.Getenv("TERM_PROGRAM")
 	if os.Getenv("STY") != "" {

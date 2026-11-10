@@ -27,6 +27,7 @@ func written(t *testing.T, m Model) string {
 
 func TestUploadsTravelByMarker(t *testing.T) {
 	m := testModel()
+	m.uploads.resend = false // whether or not the tests run under tmux
 	p := m.panes[0]
 	p.book = &book.Book{Title: "Synthetic"}
 	p.res = render.Result{Cols: 1, Rows: 1, Lines: []string{"x"}, Transmit: []byte("\x1b_Gfirst\x1b\\")}
@@ -41,30 +42,56 @@ func TestUploadsTravelByMarker(t *testing.T) {
 	if line := uploadMarker + "1" + markerEnd + "abc"; ansi.StringWidth(line) != 3 || !strings.HasPrefix(ansi.Truncate(line, 2, ""), uploadMarker+"1"+markerEnd) {
 		t.Fatal("the terminal library no longer treats the marker as a zero-width sequence")
 	}
-	var out bytes.Buffer
-	if n, err := m.uploads.write(&out, []byte(first)); err != nil || n != len(first) || strings.Count(out.String(), "\x1b_Gfirst\x1b\\") != 1 || strings.Contains(out.String(), uploadMarker) {
-		t.Fatalf("spliced frame: %d, %v, %q", n, err, out.String())
-	}
 
 	// A new page gets a new marker; the previous frame, which Bubble Tea may
 	// still be writing, keeps its upload for one more frame.
 	p.res.Transmit = []byte("\x1b_Gsecond\x1b\\")
 	second := m.View()
+	var out bytes.Buffer
+	if n, err := m.uploads.write(&out, []byte(first)); err != nil || n != len(first) || strings.Count(out.String(), "\x1b_Gfirst\x1b\\") != 1 || strings.Contains(out.String(), uploadMarker) {
+		t.Fatalf("spliced frame: %d, %v, %q", n, err, out.String())
+	}
 	out.Reset()
 	m.uploads.write(&out, []byte(second)) //nolint:errcheck
 	if second == first || !strings.Contains(out.String(), "second") {
 		t.Fatal("a new upload kept the old marker")
 	}
+	// The terminal keeps the image, so a line written again, as when the
+	// other page of a spread turns, carries no upload.
 	out.Reset()
-	m.uploads.write(&out, []byte(first)) //nolint:errcheck
-	if !strings.Contains(out.String(), "first") {
-		t.Fatal("the previous frame lost its upload")
+	if n, err := m.uploads.write(&out, []byte(second)); err != nil || n != len(second) || strings.Contains(out.String(), "second") || strings.Contains(out.String(), uploadMarker) {
+		t.Fatalf("rewritten line: %d, %v, %q", n, err, out.String())
 	}
+	// tmux drops an upload that arrives while it redraws the window, so
+	// under tmux the line carries its upload every time.
+	m.uploads.resend = true
+	out.Reset()
+	m.uploads.write(&out, []byte(second)) //nolint:errcheck
+	if strings.Count(out.String(), "\x1b_Gsecond\x1b\\") != 1 {
+		t.Fatalf("rewritten line under tmux: %q", out.String())
+	}
+	m.uploads.resend = false
 	m.View()
 	out.Reset()
 	m.uploads.write(&out, []byte(first)) //nolint:errcheck
 	if strings.Contains(out.String(), "first") || strings.Contains(out.String(), uploadMarker) || len(m.uploads.entries) != 1 {
 		t.Fatalf("an old upload stayed or its marker leaked: %q, %d kept", out.String(), len(m.uploads.entries))
+	}
+}
+
+func TestNativeReturnUploadsKeptPagesAgain(t *testing.T) {
+	m := testModel()
+	m.uploads.resend = false // whether or not the tests run under tmux
+	p := m.panes[0]
+	p.book = &book.Book{Title: "Synthetic"}
+	p.res = render.Result{Cols: 1, Rows: 1, Lines: []string{"x"}, Transmit: []byte("\x1b_Gpage\x1b\\")}
+	if !strings.Contains(written(t, m), "\x1b_Gpage") || strings.Contains(written(t, m), "\x1b_Gpage") {
+		t.Fatal("the page did not upload exactly once")
+	}
+	// Stopping for the native window deletes the reader's terminal images.
+	m = m.ApplyNativeState(m.NativeState())
+	if !strings.Contains(written(t, m), "\x1b_Gpage") {
+		t.Fatal("the page kept through the native window did not upload again")
 	}
 }
 

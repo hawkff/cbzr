@@ -52,12 +52,12 @@ environment:
   CBZR_EPUB_FALLBACK_FONT   TTF/OTF/TTC with glyphs the bundled fonts lack;
                             replaces the system font search
 
-Pages show as pixels through kitty graphics in Kitty, Ghostty and tmux 3.3+
-with passthrough, and through sixel graphics in foot, WezTerm, Konsole,
-xterm and mlterm. Other terminals get half blocks, which show EPUB, FB2,
-DOCX and DOC text as plain text (webtoon mode then needs pixels). PDF and
-DJVU pages render through pdftoppm and ddjvu on access. e opens the browser
-reader, f the native macOS window.
+Pages show as pixels through kitty graphics in Kitty, Ghostty, herdr and
+tmux 3.3+ with passthrough, and through sixel graphics in foot, WezTerm,
+Konsole, xterm and mlterm. Other terminals get half blocks, which show
+EPUB, FB2, DOCX and DOC text as plain text (webtoon mode then needs
+pixels). PDF and DJVU pages render through pdftoppm and ddjvu on access.
+e opens the browser reader, f the native macOS window.
 
 Positions and bookmarks live in the user config dir ($XDG_CONFIG_HOME/cbzr,
 by default ~/.config/cbzr, on Linux; ~/Library/Application Support/cbzr on

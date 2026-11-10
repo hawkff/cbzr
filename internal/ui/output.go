@@ -34,15 +34,17 @@ type uploads struct {
 	views   uint64 // frames built so far
 	next    uint64 // id for the next new upload
 	entries []upload
+	resend  bool // under tmux, which can drop an upload on its way to the terminal
 }
 
 type upload struct {
 	data []byte
 	id   uint64
 	view uint64 // the last frame that showed it
+	sent bool   // a write carried it out
 }
 
-func newUploads() *uploads { return &uploads{} }
+func newUploads() *uploads { return &uploads{resend: os.Getenv("TMUX") != ""} }
 
 // begin starts a frame. It keeps the uploads of the previous frame, which
 // Bubble Tea may still be writing, and drops older ones; an upload that
@@ -124,9 +126,28 @@ func (u *uploads) lookup(id uint64) []byte {
 	return nil
 }
 
-// write sends p to w with every upload marker replaced by its upload, then
-// draws each image that a paint marker in p names. A marker whose data is
-// gone writes nothing.
+// take returns the upload behind a marker. Bubble Tea writes the marker's
+// line again whenever a cell on it changes, as when the other page of a
+// spread or split turns, and a terminal keeps a kitty image until an upload
+// replaces it, so take returns nil after the first time. Under tmux it
+// returns the upload every time. tmux drops a passthrough string that
+// arrives while it redraws the window, and the next write of the line then
+// delivers the image.
+func (u *uploads) take(id uint64) []byte {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := range u.entries {
+		if e := &u.entries[i]; e.id == id && (u.resend || !e.sent) {
+			e.sent = true
+			return e.data
+		}
+	}
+	return nil
+}
+
+// write sends p to w with every upload marker replaced by what take returns
+// for it, then draws each image that a paint marker in p names. A marker
+// whose data is gone writes nothing.
 func (u *uploads) write(w io.Writer, p []byte) (int, error) {
 	if u == nil {
 		return w.Write(p)
@@ -149,7 +170,7 @@ func (u *uploads) write(w io.Writer, p []byte) (int, error) {
 		}
 		if id, ok := strings.CutPrefix(marker, uploadMarker); ok {
 			// Uploads never change after rendering, so the write needs no lock.
-			if _, err := w.Write(u.lookup(parseID(id))); err != nil {
+			if _, err := w.Write(u.take(parseID(id))); err != nil {
 				return n + i, err
 			}
 		} else if strings.HasPrefix(marker, paintMarker) && !slices.Contains(paints, marker) {

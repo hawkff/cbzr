@@ -370,6 +370,34 @@ func TestPageCacheBoundsDecodedPixels(t *testing.T) {
 	}
 }
 
+func TestPageConvertsTypesTheScalerReadsSlowly(t *testing.T) {
+	src := image.NewPaletted(image.Rect(0, 0, 2, 1), color.Palette{color.RGBA{10, 20, 30, 255}, color.RGBA{200, 100, 50, 255}})
+	src.SetColorIndex(1, 0, 1)
+	var paletted, gray bytes.Buffer
+	if err := png.Encode(&paletted, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(&gray, image.NewGray(image.Rect(0, 0, 2, 1))); err != nil {
+		t.Fatal(err)
+	}
+	b := newBook("book", false)
+	b.pages = []entry{memEntry{"paletted.png", paletted.Bytes()}, memEntry{"gray.png", gray.Bytes()}}
+	img, err := b.Page(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rgba, ok := img.(*image.RGBA)
+	if !ok || rgba.RGBAAt(0, 0) != (color.RGBA{10, 20, 30, 255}) || rgba.RGBAAt(1, 0) != (color.RGBA{200, 100, 50, 255}) {
+		t.Fatalf("paletted page decoded as %T", img)
+	}
+	// A type the scaler reads directly stays as decoded, at a quarter of the memory.
+	if img, err := b.Page(1); err != nil {
+		t.Fatal(err)
+	} else if _, ok := img.(*image.Gray); !ok {
+		t.Fatalf("gray page decoded as %T", img)
+	}
+}
+
 func TestOpenEmbeddedPDFMarker(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()
