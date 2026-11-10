@@ -500,13 +500,21 @@ func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
 	return img, nil
 }
 
-// CacheHolds reports whether the decoded-page cache has room for n pages the
-// size of page i. A page that is not in the cache counts as small.
-func (b *Book) CacheHolds(n, i int) bool {
+// RoomToPreload reports whether the decoded-page cache can hold the pages on
+// screen together with as many pixels again for the pages after them.
+// shortcut: takes the next pages to be as large as the shown ones, so a
+// spread of very different scans preloads too much or too little; reading
+// the sizes of the next pages first would settle it.
+func (b *Book) RoomToPreload(shown ...int) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	img := b.cache[i]
-	return img == nil || n*img.Bounds().Dx()*img.Bounds().Dy() <= maxCachePixels
+	pixels := 0
+	for _, i := range shown {
+		if img := b.cache[i]; img != nil {
+			pixels += img.Bounds().Dx() * img.Bounds().Dy()
+		}
+	}
+	return 2*pixels <= maxCachePixels
 }
 
 // scalable returns img in a type that x/image/draw scales without a method

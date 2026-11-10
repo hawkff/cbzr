@@ -1178,6 +1178,8 @@ func smoothWebtoonScroll(pending float64) float64 {
 // openBook opens path for pane i in the background, because laying a long
 // text book out takes seconds. page is the page to show, or -1 for the saved
 // position. The pane keeps its book until the new one is ready.
+// shortcut: an open the pane stopped waiting for still runs to its end;
+// stopping it early needs a context through book.Open and the layout.
 func (m Model) openBook(i int, path string, page int) tea.Cmd {
 	p, request := m.panes[i], &opening{path}
 	p.opening = request
@@ -1790,7 +1792,7 @@ func (m Model) prefetch(i, page int) tea.Cmd {
 	}
 	// Pages too large to sit in the cache beside the ones on screen would
 	// push those out, and every pan or zoom would decode them again.
-	if !p.book.CacheHolds(2*m.slotCount(), p.shown[0]) {
+	if !p.book.RoomToPreload(p.shown[:m.slotCount()]...) {
 		return nil
 	}
 	b := p.book

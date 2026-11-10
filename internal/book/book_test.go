@@ -368,8 +368,9 @@ func TestPageCacheBoundsDecodedPixels(t *testing.T) {
 	if len(b.cache) != 2 || b.cache[0] != nil || b.cachePixels != 2*5000*5000 {
 		t.Fatalf("decoded cache kept %d pages, %d pixels", len(b.cache), b.cachePixels)
 	}
-	// Two such pages fit and four do not; a page outside the cache counts as small.
-	if !b.CacheHolds(2, 2) || b.CacheHolds(4, 2) || !b.CacheHolds(4, 0) {
+	// One such page leaves room to preload the next, a spread of two does
+	// not, and a page outside the cache counts for nothing.
+	if !b.RoomToPreload(2) || b.RoomToPreload(1, 2) || !b.RoomToPreload(0) {
 		t.Fatal("the cache misjudged its room for pages of this size")
 	}
 }
