@@ -79,6 +79,22 @@ func TestUploadsTravelByMarker(t *testing.T) {
 	}
 }
 
+func TestNativeReturnUploadsKeptPagesAgain(t *testing.T) {
+	m := testModel()
+	m.uploads.resend = false // whether or not the tests run under tmux
+	p := m.panes[0]
+	p.book = &book.Book{Title: "Synthetic"}
+	p.res = render.Result{Cols: 1, Rows: 1, Lines: []string{"x"}, Transmit: []byte("\x1b_Gpage\x1b\\")}
+	if !strings.Contains(written(t, m), "\x1b_Gpage") || strings.Contains(written(t, m), "\x1b_Gpage") {
+		t.Fatal("the page did not upload exactly once")
+	}
+	// Stopping for the native window deletes the reader's terminal images.
+	m = m.ApplyNativeState(m.NativeState())
+	if !strings.Contains(written(t, m), "\x1b_Gpage") {
+		t.Fatal("the page kept through the native window did not upload again")
+	}
+}
+
 func TestOutputFramesAndSplicesUploads(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "output")
 	if err != nil {

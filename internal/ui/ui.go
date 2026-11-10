@@ -255,6 +255,9 @@ func (m Model) ApplyNativeState(state NativeState) Model {
 	m.webtoon = state.Webtoon && !m.split
 	m.spread = state.Spread && !m.split && !m.webtoon
 	m.nativeRequested = false
+	// The reader deleted its terminal images when it stopped for the native
+	// window, so the pages it kept upload again.
+	m.uploads = newUploads()
 	return m
 }
 
