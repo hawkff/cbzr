@@ -312,7 +312,7 @@ func TestEPUBEmptyOutlineFallback(t *testing.T) {
 		t.Fatal("invisible letter without an alternative changed face")
 	}
 	l.regular = append(l.regular, fallback)
-	if output, _ := l.shape([]rune("A"), false, 32); output[0].Face != fallback {
+	if output, _ := l.shape([]rune("A"), false, 32); output[0].Face != fallback || l.resolved['A'] != fallback {
 		t.Fatal("outline fallback")
 	}
 }
