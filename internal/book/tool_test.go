@@ -2,6 +2,8 @@ package book
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"image"
 	"image/png"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func requireTools(t *testing.T, tools ...string) {
@@ -267,6 +270,16 @@ func TestToolDiagnostics(t *testing.T) {
 				t.Fatalf("tool error lost its diagnostic prefix: %v", err)
 			}
 		})
+	}
+}
+
+func TestStoppedToolReportsWhy(t *testing.T) {
+	requireTools(t, "sleep")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	// The exit status of a tool the context stopped says only "signal: killed".
+	if _, err := runToolContext(ctx, "sleep", "10"); !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "killed") {
+		t.Fatalf("stopped tool: %v", err)
 	}
 }
 

@@ -224,6 +224,8 @@ type epubLayout struct {
 	y                                 int
 	pending                           []epubAnchor // ids waiting for their content to land on a page
 	activeImages                      map[string]bool
+	resolvedFor                       []*font.Face        // the face list that resolved covers
+	resolved                          map[rune]*font.Face // the face of that list that draws each rune
 }
 
 func newEPUBLayout(b *Book) (*epubLayout, error) {

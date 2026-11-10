@@ -500,6 +500,23 @@ func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
 	return img, nil
 }
 
+// RoomToPreload reports whether the decoded-page cache can hold the pages on
+// screen together with as many pixels again for the pages after them.
+// shortcut: takes the next pages to be as large as the shown ones, so a
+// spread of very different scans preloads too much or too little; reading
+// the sizes of the next pages first would settle it.
+func (b *Book) RoomToPreload(shown ...int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	pixels := 0
+	for _, i := range shown {
+		if img := b.cache[i]; img != nil {
+			pixels += img.Bounds().Dx() * img.Bounds().Dy()
+		}
+	}
+	return 2*pixels <= maxCachePixels
+}
+
 // scalable returns img in a type that x/image/draw scales without a method
 // call per sample: RGBA, NRGBA, Gray or YCbCr. It converts paletted PNG and
 // GIF, 16-bit PNG, CMYK JPEG and WebP with alpha to RGBA once, so no frame

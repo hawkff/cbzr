@@ -40,7 +40,7 @@ func runToolContext(ctx context.Context, name string, args ...string) ([]byte, e
 }
 
 func runToolLimited(ctx context.Context, limit int64, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, toolTimeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, toolTimeout, fmt.Errorf("gave no result within %s", toolTimeout))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	var diagnostics toolDiagnostics
@@ -60,6 +60,10 @@ func runToolLimited(ctx context.Context, limit int64, name string, args ...strin
 		cancel() // stop a writer that outgrew the limit before waiting for it
 	}
 	if err := cmd.Wait(); err != nil && readErr == nil {
+		if ctx.Err() != nil {
+			// The context stopped the tool, whose exit status says only "killed".
+			return nil, fmt.Errorf("%s: %w", name, context.Cause(ctx))
+		}
 		msg := strings.TrimSpace(string(diagnostics))
 		if msg == "" {
 			msg = err.Error()

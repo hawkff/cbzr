@@ -470,6 +470,9 @@ func cbzr_go_native_render_async(handle C.uintptr_t, width, height C.int, view u
 			if frame.image != nil {
 				length = C.size_t(len(frame.image.Pix))
 				pixels = C.CBytes(frame.image.Pix)
+				if frame.snapshot.state.Webtoon {
+					render.Recycle(frame.image) // a webtoon frame comes from the frame pool
+				}
 				frame.image = nil
 			}
 		}
