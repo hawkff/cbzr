@@ -3,6 +3,7 @@
 package render
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,7 @@ var terminal struct {
 	cw, ch float64 // cell size the terminal reported (XTWINOPS)
 	sixel  bool    // its device attributes list sixel graphics
 	colors int     // sixel color registers it reported (XTSMGRAPHICS)
+	kitty  bool    // it accepted a kitty graphics query
 }
 
 // CellSize returns the pixel size of one terminal cell. The XTWINOPS
@@ -63,9 +65,10 @@ var ioctlCellSize = func() (float64, float64, bool) {
 
 // probe asks the terminal for its cell size (XTWINOPS "CSI 16 t") and its
 // device attributes (DA1), which list sixel graphics as 4. Terminals answer
-// in order and every one answers DA1, so its reply ends the wait. A sixel
-// terminal, or any terminal when sixel is set, is then asked how many color
-// registers it has. probe must run before the TUI owns stdin.
+// in order and every one answers DA1, so its reply ends the wait. herdr is
+// asked about kitty graphics first. A sixel terminal, or any terminal when
+// sixel is set, is then asked how many color registers it has. probe must
+// run before the TUI owns stdin.
 func probe(sixel bool) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
@@ -87,10 +90,15 @@ func probe(sixel bool) {
 	}
 	defer unix.IoctlSetTermios(fd, ioctlWriteTermios, old) //nolint:errcheck
 
-	reply := ask(tty, "\x1b[16t\x1b[c")
+	query := "\x1b[16t\x1b[c"
+	if inHerdr() {
+		query = kittyQuery + query
+	}
+	reply := ask(tty, query)
 	if w, h, ok := parseCellReply(reply); ok {
 		terminal.cw, terminal.ch = w, h
 	}
+	terminal.kitty = hasKitty(reply)
 	terminal.sixel = hasSixel(reply)
 	if terminal.sixel || sixel {
 		terminal.colors = colorRegisters(ask(tty, "\x1b[?1;1;0S\x1b[c"))
@@ -117,6 +125,15 @@ func ask(tty io.ReadWriter, query string) []byte {
 		}
 	}
 	return buf
+}
+
+// kittyQuery asks whether the terminal draws kitty graphics. One that does
+// answers "ESC _ G i=31;OK ESC \" ahead of its DA1 reply.
+const kittyQuery = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\"
+
+// hasKitty reports whether a reply accepts kittyQuery.
+func hasKitty(reply []byte) bool {
+	return bytes.Contains(reply, []byte("\x1b_Gi=31;OK\x1b\\"))
 }
 
 // hasSixel reports whether a DA1 reply lists sixel graphics (4) after the

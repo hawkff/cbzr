@@ -283,4 +283,14 @@ func TestProbeReadsSixelSupport(t *testing.T) {
 	if n := colorRegisters([]byte("\x1b[?1;3;0S\x1b[?63;4c")); n != 0 {
 		t.Fatalf("failed query gave %d registers", n)
 	}
+	// herdr accepts the kitty graphics query ahead of its other answers.
+	herdr := []byte("\x1b_Gi=31;OK\x1b\\\x1b[6;40;20t\x1b[?62;22c")
+	if cw, ch, ok := parseCellReply(herdr); !hasKitty(herdr) || hasSixel(herdr) || !ok || cw != 20 || ch != 40 {
+		t.Fatalf("herdr: kitty = %v, sixel = %v, cell size %vx%v", hasKitty(herdr), hasSixel(herdr), cw, ch)
+	}
+	for _, reply := range []string{"\x1b_Gi=31;ENOTSUPPORTED\x1b\\\x1b[?62;22c", "\x1b[?62;22c", ""} {
+		if hasKitty([]byte(reply)) {
+			t.Fatalf("%q counted as kitty graphics", reply)
+		}
+	}
 }
