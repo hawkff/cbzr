@@ -32,6 +32,9 @@ func supportsKitty() bool {
 		return false
 	}
 	if inHerdr() {
+		// shortcut: herdr accepts the query even when the terminal around it
+		// has no kitty graphics, and offers no way to ask about that terminal;
+		// pages stay blank there until -r halfblock.
 		return terminal.kitty
 	}
 	prog := os.Getenv("TERM_PROGRAM")
