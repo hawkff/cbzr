@@ -1763,8 +1763,8 @@ func (m Model) View() string {
 		}
 	}
 	// Keep image uploads on a body row, separate from changing titles and
-	// clipboard writes. Retain them for repaints after menus and coalesced
-	// frames. They travel as markers that Output replaces.
+	// clipboard writes. Retain them past menus and coalesced frames, until a
+	// frame carries them out. They travel as markers that Output replaces.
 	m.uploads.begin()
 	var uploads []byte
 	for i := 0; i < m.paneCount(); i++ {
