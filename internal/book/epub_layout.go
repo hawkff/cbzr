@@ -135,7 +135,12 @@ func (l *epubLayout) shape(text []rune, heading bool, size int) ([]shaping.Outpu
 // shapeWith delegates script, bidi, font runs and cluster formation to go-text.
 // A rune no face covers keeps the notdef glyph instead of failing the book.
 func (l *epubLayout) shapeWith(text []rune, faces []*font.Face, size int) ([]shaping.Output, di.Direction) {
-	inputs := l.segmenter.Split(shaping.Input{Text: text, RunEnd: len(text), Size: fixed.I(size)}, epubFontMap{faces: faces, resolved: map[rune]*font.Face{}})
+	// The face that draws a rune depends on the face list alone, so one table
+	// serves every paragraph in a row that uses the same list.
+	if l.resolved == nil || !slices.Equal(l.resolvedFor, faces) {
+		l.resolvedFor, l.resolved = slices.Clone(faces), map[rune]*font.Face{}
+	}
+	inputs := l.segmenter.Split(shaping.Input{Text: text, RunEnd: len(text), Size: fixed.I(size)}, epubFontMap{faces: faces, resolved: l.resolved})
 	inputs = epubClusterFaces(inputs, text, faces)
 	outputs := make([]shaping.Output, 0, len(inputs))
 	for _, input := range inputs {
