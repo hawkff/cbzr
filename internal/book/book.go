@@ -500,6 +500,15 @@ func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
 	return img, nil
 }
 
+// CacheHolds reports whether the decoded-page cache has room for n pages the
+// size of page i. A page that is not in the cache counts as small.
+func (b *Book) CacheHolds(n, i int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	img := b.cache[i]
+	return img == nil || n*img.Bounds().Dx()*img.Bounds().Dy() <= maxCachePixels
+}
+
 // scalable returns img in a type that x/image/draw scales without a method
 // call per sample: RGBA, NRGBA, Gray or YCbCr. It converts paletted PNG and
 // GIF, 16-bit PNG, CMYK JPEG and WebP with alpha to RGBA once, so no frame

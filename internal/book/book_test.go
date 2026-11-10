@@ -368,6 +368,10 @@ func TestPageCacheBoundsDecodedPixels(t *testing.T) {
 	if len(b.cache) != 2 || b.cache[0] != nil || b.cachePixels != 2*5000*5000 {
 		t.Fatalf("decoded cache kept %d pages, %d pixels", len(b.cache), b.cachePixels)
 	}
+	// Two such pages fit and four do not; a page outside the cache counts as small.
+	if !b.CacheHolds(2, 2) || b.CacheHolds(4, 2) || !b.CacheHolds(4, 0) {
+		t.Fatal("the cache misjudged its room for pages of this size")
+	}
 }
 
 func TestPageConvertsTypesTheScalerReadsSlowly(t *testing.T) {
