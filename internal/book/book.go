@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/png"
 	"io"
 	"os"
@@ -473,6 +474,7 @@ func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode page %d: %w", i+1, err)
 	}
+	img = scalable(img)
 
 	b.mu.Lock()
 	if b.closed {
@@ -496,6 +498,21 @@ func (b *Book) PageContext(ctx context.Context, i int) (image.Image, error) {
 	}
 	b.mu.Unlock()
 	return img, nil
+}
+
+// scalable returns img in a type that x/image/draw scales without a method
+// call per sample: RGBA, NRGBA, Gray or YCbCr. It converts paletted PNG and
+// GIF, 16-bit PNG, CMYK JPEG and WebP with alpha to RGBA once, so no frame
+// makes those calls. The copy takes four bytes per pixel, as a truecolor
+// page does, so the cache's pixel budget bounds it the same way.
+func scalable(img image.Image) image.Image {
+	switch img.(type) {
+	case *image.RGBA, *image.NRGBA, *image.Gray, *image.YCbCr:
+		return img
+	}
+	rgba := image.NewRGBA(img.Bounds())
+	draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
+	return rgba
 }
 
 type contextReader struct {
