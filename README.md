@@ -90,7 +90,12 @@ then picks the first backend in this list that the terminal supports.
   terminal. It uses XTWINOPS replies for cell dimensions. zellij,
   GNU screen and terminals started from Kitty inherit Kitty's variables, and
   cbzr ignores them there. Pass `-r kitty` when detection misses, for example
-  over SSH.
+  over SSH. Inside a herdr pane, cbzr sends a kitty graphics query and uses
+  this backend when herdr accepts it. herdr draws the images in the terminal
+  around it and accepts the query even when that terminal has no kitty
+  graphics. Pages stay blank there, so pass `-r halfblock` or set
+  `terminal.kitty_graphics = false` in herdr's config, which makes herdr
+  refuse the query.
 - `sixel`: draws pages as sixel images. cbzr picks it when the terminal's
   device attributes list sixel graphics, as in xterm started with
   `-ti vt340`, foot, WezTerm, Konsole and mlterm. Grayscale pages keep their
