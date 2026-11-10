@@ -259,6 +259,120 @@ func testModel() Model {
 		renderer: render.NewHalfBlock(), ocrText: make(map[string]string), uploads: newUploads()}
 }
 
+// openNow opens path in pane i and applies the result at once.
+func openNow(m Model, i int, path string) (tea.Model, tea.Cmd) {
+	return m.Update(m.openBook(i, path, -1)())
+}
+
+func TestBooksOpenInTheBackground(t *testing.T) {
+	m := testModel()
+	updated, _ := openNow(m, 0, testBookPath(t))
+	m = updated.(Model)
+	p := m.panes[0]
+	first := p.book
+
+	// The pane keeps its book while the next one opens, and says so.
+	path := testBookPath(t)
+	older := m.openBook(0, path, 1)
+	if p.book != first || !strings.Contains(m.paneLines(0)[0], "opening comic.cbz") {
+		t.Fatalf("pane while a book opens: %q", m.paneLines(0)[0])
+	}
+	// A second request for the same book replaces the first, whose result
+	// closes again even when it arrives first.
+	newer := m.openBook(0, path, 2)
+	stale := older().(openedMsg)
+	updated, _ = m.Update(stale)
+	m = updated.(Model)
+	if _, err := stale.book.Page(0); p.book != first || p.opening == nil || !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("a superseded open reached the pane or stayed open: %v", err)
+	}
+	// The awaited book replaces the old one, shows the page asked for and
+	// drops a mouse press made on the old book.
+	m.drag = &hit{pane: 0}
+	updated, cmd := m.Update(newer())
+	m = updated.(Model)
+	if p.book == first || p.page != 2 || p.opening != nil || m.drag != nil || cmd == nil || strings.Contains(m.paneLines(0)[0], "opening") {
+		t.Fatalf("opened book: page %d, header %q, press kept %v", p.page, m.paneLines(0)[0], m.drag != nil)
+	}
+	if _, err := first.Page(0); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("the replaced book stayed open: %v", err)
+	}
+	// A failed open reports its error and keeps the book.
+	second := p.book
+	updated, _ = openNow(m, 0, filepath.Join(t.TempDir(), "absent.cbz"))
+	m = updated.(Model)
+	if p.book != second || p.err == nil || p.opening != nil {
+		t.Fatalf("failed open: book kept %v, error %v", p.book == second, p.err)
+	}
+	// A pane that closes while its book opens gets none.
+	gone := m.openBook(0, testBookPath(t), -1)
+	updated, _ = m.closePane(0)
+	m = updated.(Model)
+	msg := gone().(openedMsg)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if _, err := msg.book.Page(0); m.panes[0].book != nil || !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("an open reached a closed pane or stayed open: %v", err)
+	}
+}
+
+func TestSettledResizeRendersOnlyWhatChanged(t *testing.T) {
+	t.Setenv("TMUX", "")
+	m := testModel()
+	p := m.panes[0]
+	p.book = &book.Book{Title: "Synthetic"}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	cw, ch := render.CellSize()
+	settled := resizeSettledMsg{gen: m.resizeGen, cw: cw, ch: ch}
+	gen := p.gen
+	if _, cmd := m.Update(settled); cmd != nil || p.gen != gen {
+		t.Fatal("unchanged cells rendered the page a second time")
+	}
+	late := settled
+	late.cw++
+	if _, cmd := m.Update(late); cmd == nil || p.gen == gen {
+		t.Fatal("a cell size that settled late did not render")
+	}
+	// A page whose first render failed gets its second try.
+	gen, p.err = p.gen, errors.New("read failed")
+	if _, cmd := m.Update(settled); cmd == nil || p.gen == gen {
+		t.Fatal("a failed page was not rendered again")
+	}
+	p.err = nil
+	// tmux drops an upload that arrives while it redraws the window.
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+	gen = p.gen
+	if _, cmd := m.Update(settled); cmd == nil || p.gen == gen {
+		t.Fatal("tmux lost its second render")
+	}
+}
+
+func TestSearchLineRendersAgainOnlyInZen(t *testing.T) {
+	b, err := book.Open(testEPUBPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	for _, zen := range []bool{false, true} {
+		m := testModel()
+		m.zen = zen
+		p := m.panes[0]
+		p.book = b
+		updated, cmd := m.updateRead(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+		m = updated.(Model)
+		if m.mode != modeSearch || (cmd != nil) != zen || p.loading != zen {
+			t.Fatalf("zen=%v: opening the search line rendered: %v", zen, cmd != nil)
+		}
+		p.loading = false
+		updated, cmd = m.updateSearch(tea.KeyMsg{Type: tea.KeyEsc})
+		m = updated.(Model)
+		if m.mode != modeRead || (cmd != nil) != zen || p.loading != zen {
+			t.Fatalf("zen=%v: closing the search line rendered: %v", zen, cmd != nil)
+		}
+	}
+}
+
 func TestOverlayKeepsKittyTransmission(t *testing.T) {
 	m := testModel()
 	m.mode = modeHelp
@@ -315,7 +429,7 @@ func TestRestoredWebtoonNormalizesLayout(t *testing.T) {
 	m.spread = true
 	path := testBookPath(t)
 	m.progress.Set(path, progress.Position{Webtoon: true})
-	updated, _ := m.openBook(0, path, nil)
+	updated, _ := openNow(m, 0, path)
 	m = updated.(Model)
 	defer m.panes[0].book.Close()
 	if !m.webtoon || m.spread {
@@ -366,7 +480,7 @@ func TestFailedSpreadClearsOldRightPage(t *testing.T) {
 func TestSpreadStopsOnLastPair(t *testing.T) {
 	m := testModel()
 	m.spread = true
-	updated, _ := m.openBook(0, testBookPath(t), nil)
+	updated, _ := openNow(m, 0, testBookPath(t))
 	m = updated.(Model)
 	defer m.panes[0].book.Close()
 	p := m.panes[0]
@@ -426,12 +540,12 @@ func TestNativeRequestInvalidatesPendingOCR(t *testing.T) {
 
 func TestReplacedBookRejectsRenderAndOCR(t *testing.T) {
 	m := testModel()
-	updated, _ := m.openBook(0, testBookPath(t), nil)
+	updated, _ := openNow(m, 0, testBookPath(t))
 	m = updated.(Model)
 	p := m.panes[0]
 	oldBook, oldGen := p.book, p.gen
 	m.find = search{gen: 4, running: true, term: "needle", total: 3}
-	updated, _ = m.openBook(0, testBookPath(t), nil)
+	updated, _ = openNow(m, 0, testBookPath(t))
 	m = updated.(Model)
 	defer m.panes[0].book.Close()
 	updated, _ = m.Update(renderedMsg{target: p, book: oldBook, gen: oldGen, page: 80})
@@ -499,7 +613,7 @@ func TestPaneRemapRejectsOldRender(t *testing.T) {
 	m := testModel()
 	m.split = true
 	m.active = 1
-	updated, _ := m.openBook(1, testBookPath(t), nil)
+	updated, _ := openNow(m, 1, testBookPath(t))
 	m = updated.(Model)
 	p := m.panes[1]
 	gen := p.gen
@@ -627,7 +741,7 @@ func TestZenErrorsScheduleReplacementFrame(t *testing.T) {
 func TestOpenSplitRendersOriginalPaneAndCancelsSearch(t *testing.T) {
 	for _, selectBook := range []bool{false, true} {
 		m := testModel()
-		updated, _ := m.openBook(0, testBookPath(t), nil)
+		updated, _ := openNow(m, 0, testBookPath(t))
 		m = updated.(Model)
 		p := m.panes[0]
 		defer p.book.Close()
@@ -651,7 +765,7 @@ func TestOpenSplitRendersOriginalPaneAndCancelsSearch(t *testing.T) {
 		}
 		if selectBook {
 			m.mode = modeRead
-			updated, _ = m.openBook(m.pickFor, testBookPath(t), nil)
+			updated, _ = openNow(m, m.pickFor, testBookPath(t))
 			m = updated.(Model)
 			defer m.panes[1].book.Close()
 		} else {
@@ -862,7 +976,7 @@ func TestInversionRendersEveryViewMode(t *testing.T) {
 
 func TestInversionSurvivesNavigationAndScreenshot(t *testing.T) {
 	m := testModel()
-	updated, _ := m.openBook(0, testBookPath(t), nil)
+	updated, _ := openNow(m, 0, testBookPath(t))
 	m = updated.(Model)
 	defer m.panes[0].book.Close()
 	updated, _ = m.updateRead(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})

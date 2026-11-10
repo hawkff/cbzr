@@ -57,6 +57,7 @@ type pane struct {
 	err     error
 	err2    error
 	loading bool
+	opening *opening // the book on its way into this pane
 	gen     int
 
 	renderCtx    context.Context // ends when a newer render replaces the shown frame
@@ -159,7 +160,24 @@ type ocrMsg struct {
 	err       error
 }
 
-type resizeSettledMsg struct{ gen int }
+// resizeSettledMsg carries the cell size its resize rendered with.
+type resizeSettledMsg struct {
+	gen    int
+	cw, ch float64
+}
+
+// opening is one request to open a book. Its address tells two requests
+// for the same path apart.
+type opening struct{ path string }
+
+// openedMsg delivers a book that opened in the background.
+type openedMsg struct {
+	target  *pane
+	request *opening
+	page    int // the page to show, or -1 for the saved position
+	book    *book.Book
+	err     error
+}
 
 type frameReadyMsg struct {
 	target          *pane
@@ -359,7 +377,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.renderer.SetCellSize(render.CellSize())
+		cw, ch := render.CellSize()
+		m.renderer.SetCellSize(cw, ch)
 		// A sixel image has the pixel size of the cells it was drawn for, and
 		// a font change makes that wrong. Drop it until it renders again.
 		for _, p := range m.panes {
@@ -376,16 +395,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Multiplexers (cmux, tmux) can settle geometry after the first
 		// resize event; render again once things go quiet.
 		settle := tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg {
-			return resizeSettledMsg{gen: gen}
+			return resizeSettledMsg{gen: gen, cw: cw, ch: ch}
 		})
 		return m, tea.Batch(m.rerenderAll(), settle)
 
 	case resizeSettledMsg:
-		if msg.gen != m.resizeGen {
+		// The same cells would draw the same page again, so only a page that
+		// failed gets a second try. tmux needs the second render either way,
+		// because it drops an upload that arrives while it redraws the window.
+		cw, ch := render.CellSize()
+		same := cw == msg.cw && ch == msg.ch && os.Getenv("TMUX") == ""
+		for _, p := range m.panes[:m.paneCount()] {
+			same = same && p.err == nil && p.err2 == nil
+		}
+		if msg.gen != m.resizeGen || same {
 			return m, nil
 		}
-		m.renderer.SetCellSize(render.CellSize())
+		m.renderer.SetCellSize(cw, ch)
 		return m, m.rerenderAll()
+
+	case openedMsg:
+		return m.finishOpen(msg)
 
 	case renderedMsg:
 		p := m.panes[msg.pane]
@@ -669,6 +699,7 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			p.gen++
 			p.loading = false
+			p.opening = nil
 			p.chaptersLoading = false
 		}
 		m.nativeRequested = true
@@ -759,7 +790,7 @@ func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeSearch
 		m.input = ""
-		return m, m.rerenderAll()
+		return m, m.searchLayout()
 	case "n":
 		return m.gotoHit(1)
 	case "p":
@@ -806,7 +837,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.picker, cmd = m.picker.Update(msg)
 	if ok, path := m.picker.DidSelectFile(msg); ok {
 		m.mode = modeRead
-		return m.openBook(m.pickFor, path, cmd)
+		return m, tea.Batch(cmd, m.openBook(m.pickFor, path, -1))
 	}
 	return m, cmd
 }
@@ -878,13 +909,7 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeRead
 		p := m.panes[m.active]
 		if it.path != "" && (p.book == nil || p.book.Path != it.path) {
-			mm, cmd := m.openBook(m.active, it.path, nil)
-			mdl := mm.(Model)
-			if b := mdl.panes[mdl.active].book; b == nil || b.Path != it.path {
-				return mdl, cmd // the open failed; keep the current page
-			}
-			mdl2, cmd2 := mdl.goTo(mdl.active, it.page)
-			return mdl2, tea.Batch(cmd, cmd2)
+			return m, m.openBook(m.active, it.path, it.page)
 		}
 		return m.goTo(m.active, it.page)
 	}
@@ -972,15 +997,15 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.mode = modeRead
-		return m, m.rerenderAll()
+		return m, m.searchLayout()
 	case "enter":
 		m.mode = modeRead
 		term := strings.TrimSpace(m.input)
 		if term == "" {
-			return m, m.rerenderAll()
+			return m, m.searchLayout()
 		}
 		updated, cmd := m.startSearch(term)
-		return updated, tea.Batch(cmd, m.rerenderAll())
+		return updated, tea.Batch(cmd, m.searchLayout())
 	case "backspace":
 		if len(m.input) > 0 {
 			_, size := utf8.DecodeLastRuneInString(m.input)
@@ -1150,12 +1175,44 @@ func smoothWebtoonScroll(pending float64) float64 {
 	return clamp(pending*0.3, -3, 3)
 }
 
-func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
-	b, err := book.Open(path)
-	p := m.panes[i]
-	if err != nil {
-		p.err = err
-		return m, prev
+// openBook opens path for pane i in the background, because laying a long
+// text book out takes seconds. page is the page to show, or -1 for the saved
+// position. The pane keeps its book until the new one is ready.
+func (m Model) openBook(i int, path string, page int) tea.Cmd {
+	p, request := m.panes[i], &opening{path}
+	p.opening = request
+	return func() tea.Msg {
+		b, err := book.Open(path)
+		return openedMsg{target: p, request: request, page: page, book: b, err: err}
+	}
+}
+
+// finishOpen puts an opened book into its pane. A pane that closed or asked
+// for another book in the meantime no longer wants it.
+func (m Model) finishOpen(msg openedMsg) (tea.Model, tea.Cmd) {
+	p, i := msg.target, -1
+	for n, pane := range m.panes {
+		if pane == p {
+			i = n
+		}
+	}
+	if i < 0 || p.opening != msg.request {
+		if msg.book != nil {
+			msg.book.Close() //nolint:errcheck
+		}
+		return m, nil
+	}
+	p.opening = nil
+	if msg.err != nil {
+		p.err = msg.err
+		return m, nil
+	}
+	b := msg.book
+	if m.drag != nil && m.drag.pane == i {
+		m.drag = nil // a press on the old book must not act on this one
+	}
+	if i == m.active && m.menu.kind == menuChapters && (m.mode == modeMenu || m.mode == modeMenuFilter) {
+		m.mode = modeRead // the menu lists the chapters of the book this one replaces
 	}
 	m.cancelSearch()
 	m.closeBook(i)
@@ -1172,8 +1229,11 @@ func (m Model) openBook(i int, path string, prev tea.Cmd) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	if msg.page >= 0 {
+		p.page, p.webOffset, p.webScroll = min(b.Len()-1, msg.page), 0, 0
+	}
 	m.syncServer()
-	return m, tea.Batch(prev, m.renderPane(i), m.loadChapters(p))
+	return m, tea.Batch(m.renderPane(i), m.loadChapters(p))
 }
 
 func (m Model) toggleSplit() (tea.Model, tea.Cmd) {
@@ -1461,8 +1521,10 @@ func (m Model) updateOCR(msg ocrMsg) (tea.Model, tea.Cmd) {
 	}
 	for batch := 1; ; batch++ { // pages handled in this update
 		if msg.err == nil {
-			key := p.book.Path + "\x00" + strconv.Itoa(msg.page)
-			m.ocrText[key] = msg.text
+			// Book text needs no cache, because ocrPage reads it from the book.
+			if !p.book.IsTextPage(msg.page) {
+				m.ocrText[p.book.Path+"\x00"+strconv.Itoa(msg.page)] = msg.text
+			}
 			if strings.Contains(searchable(msg.text), m.find.term) {
 				m.find.hits = append(m.find.hits, msg.page)
 			}
@@ -1570,6 +1632,15 @@ func (m *Model) rerenderAll() tea.Cmd {
 		}
 	}
 	return tea.Batch(cmds...)
+}
+
+// searchLayout renders again when the search line changes the size of the
+// panes. It does so in zen mode alone, where it takes a row from the page.
+func (m *Model) searchLayout() tea.Cmd {
+	if m.zen {
+		return m.rerenderAll()
+	}
+	return nil
 }
 
 func (m *Model) renderPane(i int) tea.Cmd {
@@ -1715,6 +1786,11 @@ func textResult(paragraphs []string, top, cols, rows int) render.Result {
 func (m Model) prefetch(i, page int) tea.Cmd {
 	p := m.panes[i]
 	if p.book == nil || page >= p.book.Len() || m.renderer.Name() == "halfblock" && p.book.IsTextPage(page) {
+		return nil
+	}
+	// Pages too large to sit in the cache beside the ones on screen would
+	// push those out, and every pan or zoom would decode them again.
+	if !p.book.CacheHolds(2*m.slotCount(), p.shown[0]) {
 		return nil
 	}
 	b := p.book
@@ -1887,6 +1963,9 @@ func (m Model) paneLines(i int) []string {
 		if p.loading {
 			title += " …"
 		}
+	}
+	if p.opening != nil {
+		title = "opening " + safeText(filepath.Base(p.opening.path)) + " …"
 	}
 	ts := titleInactive
 	if i == m.active {

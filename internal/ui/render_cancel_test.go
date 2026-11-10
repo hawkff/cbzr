@@ -37,7 +37,7 @@ func TestObsoleteRendersStopBeforeLoading(t *testing.T) {
 			case "resize":
 				updated, next = m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
 			case "replace":
-				updated, next = m.openBook(0, testBookPath(t), nil)
+				updated, next = openNow(m, 0, testBookPath(t))
 				defer m.panes[0].book.Close()
 			case "close":
 				updated, _ = m.closePane(0)
